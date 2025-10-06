@@ -1,0 +1,68 @@
+// backend/freeRace.jsw
+import wixData from 'wix-data';
+import { getSecret } from 'wix-secrets-backend';
+import { hmac } from 'wix-crypto';
+import QRCode from 'qrcode';
+
+// Convert ArrayBuffer to hex (avoids using Buffer)
+function toHex(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    const h = bytes[i].toString(16).padStart(2, '0');
+    out += h;
+  }
+  return out;
+}
+
+// Generate a signed FREE_RACE QR and store it
+export async function issueFreeRaceForMember(userId, email, displayName) {
+  if (!userId) return { ok: false, error: 'missing_user' };
+
+  const secret = await getSecret('QR_HMAC_SECRET');
+
+  // 24-char random nonce
+  const nonce = (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 24);
+
+  const issuedAt = new Date().toISOString();
+  const signBase = `${userId}|${nonce}|${issuedAt}`;
+  const signature = toHex(await hmac('sha-256', secret, signBase));
+
+  const code = `FREE_RACE|v1|${userId}|${nonce}|${issuedAt}|${signature}`;
+
+  await wixData.insert('FreeRaceCodes', {
+    userId,
+    email,
+    displayName,
+    nonce,
+    issuedAt: new Date(issuedAt),
+    signature,
+    status: 'issued',
+    code
+  });
+
+  const dataUrl = await QRCode.toDataURL(code, { margin: 1, scale: 6 });
+  return { ok: true, code, dataUrl };
+}
+
+// Return existing 'issued' QR or create a new one
+export async function getOrIssueFreeRaceForMember(userId, email, displayName) {
+  if (!userId) return { ok: false, error: 'missing_user' };
+
+  const existing = await wixData
+    .query('FreeRaceCodes')
+    .eq('userId', userId)
+    .eq('status', 'issued')
+    .descending('_createdDate')
+    .limit(1)
+    .find();
+
+  if (existing.items.length) {
+    const code = existing.items[0].code;
+    const dataUrl = await QRCode.toDataURL(code, { margin: 0, scale: 8 });
+    return { ok: true, code, dataUrl };
+  }
+
+  // none issued -> create a new one
+  return issueFreeRaceForMember(userId, email, displayName);
+}

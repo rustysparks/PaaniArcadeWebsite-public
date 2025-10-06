@@ -1,0 +1,17 @@
+// backend/marketing.jsw
+import wixCrm from 'wix-crm-backend';
+
+export async function subscribeMemberToMarketing(contactIdOrEmail) {
+  // If you have an email, create/get a contact first:
+  const contact = await wixCrm.createContact({ emails: [contactIdOrEmail] })
+    .catch(() => null);
+
+  const contactId = contact?._id ?? contactIdOrEmail;
+
+  // Mark them as subscribed + tag for “Raffle Eligible”
+  await wixCrm.emailContact(contactId); // ensures email channel exists
+  await wixCrm.addTag(contactId, 'Raffle Eligible');
+  // NOTE: Wix now manages “marketing status” per channel from the Email Marketing app.
+  // Adding a tag is a practical way to segment; you can also use Audiences.
+  return { ok: true };
+}

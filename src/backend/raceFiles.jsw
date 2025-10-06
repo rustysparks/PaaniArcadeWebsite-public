@@ -1,0 +1,14 @@
+
+import { mediaManager } from 'wix-media-backend';
+
+export async function getRaceJsonByDate(dateStr) {
+  try {
+    const filename = `${dateStr}.json`;
+    const fileUrl = `https://static.wixstatic.com/media/${filename}`; // adjust if needed
+    const response = await fetch(fileUrl);
+    return await response.json();
+  } catch (error) {
+    console.error(`Error fetching JSON for ${dateStr}:`, error);
+    throw error;
+  }
+}

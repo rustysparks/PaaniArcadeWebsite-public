@@ -1,0 +1,320 @@
+// backend/videos.jsw
+import wixData from 'wix-data';
+import { currentMember } from 'wix-members-backend';
+
+const TBL_VIDEOS    = 'Videos';
+const TBL_LIKES     = 'VideoLikes';
+const TBL_COMMENTS  = 'VideoComments';
+const TBL_PROFILES  = 'RacerProfiles';
+const TBL_FOLLOWS   = 'Follows'; // optional; only used if you enforce friends-only comments
+
+/* ----------------------------- *
+ * Helpers
+ * ----------------------------- */
+async function getViewerId() {
+  const m = await currentMember.getMember();
+  return m?._id || null;
+}
+
+// Extract the 11-char YouTube id from youtu.be or youtube.com/watch?v=...
+export function parseYouTubeId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'youtu.be') {
+      return u.pathname.slice(1);
+    }
+    const v = u.searchParams.get('v');
+    if (v) return v;
+    const parts = u.pathname.split('/');
+    return parts.pop() || '';
+  } catch {
+    return '';
+  }
+}
+
+/* ----------------------------- *
+ * Videos: Create / List (paged) / Delete
+ * ----------------------------- */
+
+/**
+ * Create a new video for the profile.
+ * Requires the caller to be the owner (member._id === userId).
+ */
+export async function createVideo({ profileId, userId, youtubeUrl, title = '', description = '', isPublic = true }) {
+  const me = await currentMember.getMember();
+  if (!me) throw new Error('NOT_LOGGED_IN');
+  if (me._id !== userId) throw new Error('FORBIDDEN');
+
+  // sanity: ensure profile exists & belongs to userId
+  const profRes = await wixData.query(TBL_PROFILES)
+    .eq('_id', profileId)
+    .limit(1)
+    .find({ suppressAuth: true });
+  const prof = profRes.items[0];
+  if (!prof || prof.userId !== userId) throw new Error('PROFILE_MISMATCH');
+
+  const toInsert = {
+    profileId,
+    userId,
+    youtubeUrl,
+    title,
+    description,
+    isPublic: !!isPublic,
+    likesCount: 0,
+    commentsCount: 0,
+    createdAt: new Date()
+  };
+
+  const inserted = await wixData.insert(TBL_VIDEOS, toInsert, { suppressAuth: true });
+  return inserted;
+}
+
+/**
+ * Paged list of *your own* videos (for the edit page).
+ * Only returns videos for profileId and userId, newest first.
+ */
+export async function getMyVideos({ userId, profileId, limit = 5, skip = 0 }) {
+  const me = await currentMember.getMember();
+  if (!me) throw new Error('NOT_LOGGED_IN');
+  if (me._id !== userId) throw new Error('FORBIDDEN');
+
+  const res = await wixData.query(TBL_VIDEOS)
+    .eq('profileId', profileId)
+    .eq('userId', userId)
+    .descending('createdAt') // Wix supports single-field sort; newest first
+    .limit(Math.max(1, Math.min(50, limit)))
+    .skip(Math.max(0, skip))
+    .find({ suppressAuth: true });
+
+  return res.items;
+}
+
+/**
+ * Delete a video (owner only).
+ * Also cleans up likes & comments and adjusts the video's comment count if needed.
+ */
+export async function deleteVideo(videoId) {
+  const me = await currentMember.getMember();
+  if (!me) throw new Error('NOT_LOGGED_IN');
+
+  const v = await wixData.get(TBL_VIDEOS, videoId, { suppressAuth: true });
+  if (!v) throw new Error('VIDEO_NOT_FOUND');
+  if (v.userId !== me._id) throw new Error('NOT_OWNER');
+
+  // Remove related likes
+  const likes = await wixData.query(TBL_LIKES)
+    .eq('videoId', videoId)
+    .find({ suppressAuth: true });
+  await Promise.all(likes.items.map(i => wixData.remove(TBL_LIKES, i._id, { suppressAuth: true })));
+
+  // Remove related comments
+  const comments = await wixData.query(TBL_COMMENTS)
+    .eq('videoId', videoId)
+    .find({ suppressAuth: true });
+  await Promise.all(comments.items.map(i => wixData.remove(TBL_COMMENTS, i._id, { suppressAuth: true })));
+
+  // Finally remove the video
+  await wixData.remove(TBL_VIDEOS, videoId, { suppressAuth: true });
+  return { ok: true };
+}
+
+/* ----------------------------- *
+ * Likes (Video)
+ * ----------------------------- */
+export async function isLiked(videoId) {
+  const viewerId = await getViewerId();
+  if (!viewerId) return false;
+  const r = await wixData.query(TBL_LIKES)
+    .eq('userId', viewerId)
+    .eq('videoId', videoId)
+    .limit(1)
+    .find({ suppressAuth: true });
+  return r.items.length > 0;
+}
+
+export async function toggleLike(videoId) {
+  const viewerId = await getViewerId();
+  if (!viewerId) throw new Error('NOT_LOGGED_IN');
+
+  const existing = await wixData.query(TBL_LIKES)
+    .eq('userId', viewerId)
+    .eq('videoId', videoId)
+    .find({ suppressAuth: true });
+
+  const v = await wixData.get(TBL_VIDEOS, videoId, { suppressAuth: true });
+  if (!v) throw new Error('VIDEO_NOT_FOUND');
+
+  const curr = v.likesCount || 0;
+
+  if (existing.items.length === 0) {
+    // like
+    await wixData.insert(TBL_LIKES, { videoId, userId: viewerId }, { suppressAuth: true });
+    await wixData.update(TBL_VIDEOS, { _id: videoId, likesCount: curr + 1 }, { suppressAuth: true });
+    return { liked: true, likesCount: curr + 1 };
+  } else {
+    // unlike
+    await Promise.all(existing.items.map(i => wixData.remove(TBL_LIKES, i._id, { suppressAuth: true })));
+    const next = Math.max(0, curr - 1);
+    await wixData.update(TBL_VIDEOS, { _id: videoId, likesCount: next }, { suppressAuth: true });
+    return { liked: false, likesCount: next };
+  }
+}
+
+/* ----------------------------- *
+ * Comments (list/add/like/approve/reject/delete)
+ * ----------------------------- */
+async function canComment(profileUserId, viewerId) {
+  const r = await wixData
+    .query(TBL_PROFILES)
+    .eq('userId', profileUserId)
+    .limit(1)
+    .find({ suppressAuth: true });
+
+  const prof = r.items[0];
+  if (!prof) return { ok: false, reason: 'NO_PROFILE' };
+
+  if (prof.commentsFriendsOnly) {
+    // Optional: enforce a follow/friendship
+    const q = await wixData
+      .query(TBL_FOLLOWS)
+      .eq('followerId', viewerId)
+      .eq('followeeId', profileUserId)
+      .limit(1)
+      .find({ suppressAuth: true });
+
+    if (q.items.length === 0) return { ok: false, reason: 'FRIENDS_ONLY' };
+  }
+
+  return { ok: true, requireApproval: !!prof.commentsRequireApproval };
+}
+
+/**
+ * Returns approved comments ordered by likes (desc), then createdAt (desc).
+ * Wix only sorts by a single field; we emulate second sort in JS.
+ */
+export async function listComments(videoId, limit = 200) {
+  const r = await wixData
+    .query(TBL_COMMENTS)
+    .eq('videoId', videoId)
+    .eq('status', 'approved')
+    .descending('likes') // primary sort
+    .limit(Math.min(200, Math.max(1, limit)))
+    .find({ suppressAuth: true });
+
+  // Secondary sort by createdAt desc in JS to stabilize
+  const items = (r.items || []).sort((a, b) => {
+    const likesDiff = (b.likes || 0) - (a.likes || 0);
+    if (likesDiff !== 0) return likesDiff;
+    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return tb - ta;
+  });
+
+  return items;
+}
+
+export async function addComment(videoId, text) {
+  const viewerId = await getViewerId();
+  if (!viewerId) throw new Error('NOT_LOGGED_IN');
+
+  const v = await wixData.get(TBL_VIDEOS, videoId, { suppressAuth: true });
+  if (!v) throw new Error('VIDEO_NOT_FOUND');
+
+  const gate = await canComment(v.userId, viewerId);
+  if (!gate.ok) throw new Error(gate.reason);
+
+  // Snapshot displayName for consistency
+  const p = await wixData
+    .query(TBL_PROFILES)
+    .eq('userId', viewerId)
+    .limit(1)
+    .find({ suppressAuth: true });
+
+  const displayName = p.items[0]?.displayName || 'Anonymous Racer';
+  const status = gate.requireApproval ? 'pending' : 'approved';
+
+  const inserted = await wixData.insert(
+    TBL_COMMENTS,
+    { videoId, userId: viewerId, displayName, body: text, likes: 0, status, createdAt: new Date() },
+    { suppressAuth: true }
+  );
+
+  if (status === 'approved') {
+    const fresh = await wixData.get(TBL_VIDEOS, videoId, { suppressAuth: true });
+    await wixData.update(
+      TBL_VIDEOS,
+      { _id: videoId, commentsCount: (fresh.commentsCount || 0) + 1 },
+      { suppressAuth: true }
+    );
+  }
+
+  return { ok: true, status, commentId: inserted._id };
+}
+
+export async function likeComment(commentId) {
+  const c = await wixData.get(TBL_COMMENTS, commentId, { suppressAuth: true });
+  if (!c) throw new Error('COMMENT_NOT_FOUND');
+  const next = (c.likes || 0) + 1;
+  await wixData.update(TBL_COMMENTS, { _id: commentId, likes: next }, { suppressAuth: true });
+  return { ok: true, likes: next };
+}
+
+export async function approveComment(commentId) {
+  const c = await wixData.get(TBL_COMMENTS, commentId, { suppressAuth: true });
+  if (!c) throw new Error('COMMENT_NOT_FOUND');
+
+  if (c.status !== 'approved') {
+    await wixData.update(TBL_COMMENTS, { _id: commentId, status: 'approved' }, { suppressAuth: true });
+    const v = await wixData.get(TBL_VIDEOS, c.videoId, { suppressAuth: true });
+    await wixData.update(
+      TBL_VIDEOS,
+      { _id: v._id, commentsCount: (v.commentsCount || 0) + 1 },
+      { suppressAuth: true }
+    );
+  }
+  return { ok: true };
+}
+
+export async function rejectComment(commentId) {
+  const c = await wixData.get(TBL_COMMENTS, commentId, { suppressAuth: true });
+  if (!c) throw new Error('COMMENT_NOT_FOUND');
+  await wixData.update(TBL_COMMENTS, { _id: commentId, status: 'rejected' }, { suppressAuth: true });
+  return { ok: true };
+}
+
+/**
+ * Delete a comment (by commenter OR the profile owner who owns the video).
+ */
+export async function deleteComment(commentId) {
+  const me = await currentMember.getMember();
+  if (!me) throw new Error('NOT_LOGGED_IN');
+  const myId = me._id;
+
+  const c = await wixData.get(TBL_COMMENTS, commentId, { suppressAuth: true });
+  if (!c) throw new Error('COMMENT_NOT_FOUND');
+
+  const v = await wixData.get(TBL_VIDEOS, c.videoId, { suppressAuth: true });
+  if (!v) throw new Error('VIDEO_NOT_FOUND');
+
+  const prof = await wixData.query(TBL_PROFILES)
+    .eq('_id', v.profileId)
+    .limit(1)
+    .find({ suppressAuth: true });
+  const profileOwnerId = prof.items[0]?.userId;
+
+  const isCommentOwner = c.userId === myId;
+  const isProfileOwner = profileOwnerId === myId;
+
+  if (!isCommentOwner && !isProfileOwner) throw new Error('NOT_AUTHORIZED');
+
+  await wixData.remove(TBL_COMMENTS, commentId, { suppressAuth: true });
+
+  // If it was approved, decrement the video's commentsCount
+  if (c.status === 'approved') {
+    const fresh = await wixData.get(TBL_VIDEOS, c.videoId, { suppressAuth: true });
+    const next = Math.max(0, (fresh.commentsCount || 0) - 1);
+    await wixData.update(TBL_VIDEOS, { _id: fresh._id, commentsCount: next }, { suppressAuth: true });
+  }
+
+  return { ok: true };
+}

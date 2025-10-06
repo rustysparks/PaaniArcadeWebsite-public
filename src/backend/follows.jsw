@@ -1,0 +1,54 @@
+// backend/follows.jsw
+import wixData from 'wix-data';
+import { currentUser } from 'wix-users-backend';
+
+/** helper: get logged-in user's id or null */
+function me() {
+  const u = currentUser;
+  return u && u.loggedIn ? u.id : null;
+}
+
+/** Is the current user following targetId? */
+export async function isFollowing(targetId) {
+  const myId = me();
+  if (!myId || !targetId || myId === targetId) return false;
+  const r = await wixData.query('Follows')
+    .eq('followerId', myId)
+    .eq('targetId', targetId)
+    .limit(1)
+    .find();
+  return r.items.length > 0;
+}
+
+/** Follow (no-op if already following). Returns {following:true, followers,countFollowing} */
+export async function follow(targetId) {
+  const myId = me();
+  if (!myId) throw new Error('LOGIN_REQUIRED');
+  if (myId === targetId) throw new Error('CANT_FOLLOW_SELF');
+
+  const existing = await wixData.query('Follows')
+    .eq('followerId', myId).eq('targetId', targetId).limit(1).find();
+  if (!existing.items.length) {
+    await wixData.insert('Follows', { followerId: myId, targetId, createdAt: new Date() });
+  }
+  return { following: true, ...(await counts(targetId)) };
+}
+
+/** Unfollow (no-op if not following). Returns {following:false, ...counts} */
+export async function unfollow(targetId) {
+  const myId = me();
+  if (!myId) throw new Error('LOGIN_REQUIRED');
+  if (myId === targetId) throw new Error('CANT_FOLLOW_SELF');
+
+  const r = await wixData.query('Follows')
+    .eq('followerId', myId).eq('targetId', targetId).find();
+  for (const doc of r.items) await wixData.remove('Follows', doc._id);
+  return { following: false, ...(await counts(targetId)) };
+}
+
+/** Get counts for a target */
+export async function counts(targetId) {
+  const followers = await wixData.query('Follows').eq('targetId', targetId).count();
+  const following = await wixData.query('Follows').eq('followerId', targetId).count();
+  return { followers, following };
+}

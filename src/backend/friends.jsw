@@ -1,0 +1,30 @@
+import wixData from 'wix-data';
+
+// Prefix-first, then contains; returns avatar too
+export async function searchProfiles(query, limit = 10) {
+  const q = (query || "").trim().toLowerCase();
+  if (!q) return { ok:true, items: [] };
+
+  const seen = new Set();
+  const takeNew = arr => arr.filter(i => !seen.has(i._id) && seen.add(i._id) === undefined);
+
+  const uStarts   = await wixData.query('RacerProfiles').startsWith('username', q).limit(limit).find();
+  const dStarts   = await wixData.query('RacerProfiles').startsWith('displayName', q).limit(limit).find();
+  const uContains = await wixData.query('RacerProfiles').contains('username', q).limit(limit).find();
+  const dContains = await wixData.query('RacerProfiles').contains('displayName', q).limit(limit).find();
+
+  const items = [
+    ...uStarts.items,
+    ...takeNew(dStarts.items),
+    ...takeNew(uContains.items),
+    ...takeNew(dContains.items),
+  ].slice(0, limit).map(i => ({
+    _id: i._id,
+    userId: i.userId,
+    username: i.username || "",
+    displayName: i.displayName || "",
+    avatar: i.avatar || ""   // image field in RacerProfiles
+  }));
+
+  return { ok:true, items };
+}

@@ -1,0 +1,89 @@
+// backend/http-functions.jsw (V2 - uses wix-crypto)
+import wixData from 'wix-data';
+import { getSecret } from 'wix-secrets-backend';
+import { hmac } from 'wix-crypto';
+import { triggeredEmails } from 'wix-crm-backend';
+
+function json(status, obj) {
+  return { status, headers: { 'Content-Type': 'application/json' }, body: obj };
+}
+function hex(buf) {
+  return Buffer.from(buf).toString('hex');
+}
+async function checkApiKey(request) {
+  const provided = request.headers['x-arcade-key'];
+  const secret = await getSecret('ARCADE_API_KEY');
+  return provided && secret && provided === secret;
+}
+
+// POST /_functions/redeemFreeRace  { code }
+export async function post_redeemFreeRace(request) {
+  try {
+    const { code } = await request.body.json();
+    if (!code || typeof code !== 'string' || !code.startsWith('FREE_RACE|'))
+      return json(400, { ok:false, error:'bad_code' });
+
+    const parts = code.split('|'); // FREE_RACE|v1|userId|nonce|issuedAt|signature
+    if (parts.length !== 6) return json(400, { ok:false, error:'bad_format' });
+    const [, v, userId, nonce, issuedAt, signature] = parts;
+    if (v !== 'v1') return json(400, { ok:false, error:'bad_version' });
+
+    const secret = await getSecret('QR_HMAC_SECRET');
+    const expect = hex(await hmac('sha-256', secret, `${userId}|${nonce}|${issuedAt}`));
+    if (expect !== signature) return json(401, { ok:false, error:'bad_signature' });
+
+    const { items } = await wixData.query('FreeRaceCodes')
+      .eq('userId', userId).eq('nonce', nonce).eq('status', 'issued').find();
+    if (!items.length) return json(409, { ok:false, error:'already_used_or_missing' });
+
+    const row = items[0];
+    row.status = 'used';
+    row.usedAt = new Date();
+    await wixData.update('FreeRaceCodes', row);
+
+    return json(200, { ok:true, userId, email: row.email, displayName: row.displayName || '' });
+  } catch (e) {
+    return json(500, { ok:false, error:String(e) });
+  }
+}
+
+// POST /_functions/updateDriveFolder  (protected)
+export async function post_updateDriveFolder(request) {
+  try {
+    if (!(await checkApiKey(request))) return json(401, { ok:false, error:'no_key' });
+    const { userId, email, displayName, driveFolderId, driveFolderUrl } = await request.body.json();
+    if (!userId || !driveFolderId) return json(400, { ok:false, error:'missing_fields' });
+
+    const existing = await wixData.query('MembersMeta').eq('userId', userId).find();
+    if (existing.items.length) {
+      const row = existing.items[0];
+      Object.assign(row, { email, displayName, driveFolderId, driveFolderUrl });
+      await wixData.update('MembersMeta', row);
+    } else {
+      await wixData.insert('MembersMeta', { userId, email, displayName, driveFolderId, driveFolderUrl });
+    }
+    return json(200, { ok:true });
+  } catch (e) {
+    return json(500, { ok:false, error:String(e) });
+  }
+}
+
+// POST /_functions/notifyVideoReady  (protected)
+export async function post_notifyVideoReady(request) {
+  try {
+    if (!(await checkApiKey(request))) return json(401, { ok:false, error:'no_key' });
+    const { email, displayName, dateFolderUrl, raceName, recordedOn } = await request.body.json();
+    if (email && dateFolderUrl) {
+      try {
+        await triggeredEmails.emailContact('video-ready', email, {
+          variables: { displayName, dateFolderUrl, raceName, recordedOn }
+        });
+      } catch (e) {
+        // ok if no triggered email is set
+      }
+    }
+    return json(200, { ok:true });
+  } catch (e) {
+    return json(500, { ok:false, error:String(e) });
+  }
+}
