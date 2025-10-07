@@ -1,11 +1,19 @@
-// === Top-level imports (must be first) ===
-import wixLocation from 'wix-location';
-import { authentication } from 'wix-members-frontend'; // remove if unused
-// import wixData from 'wix-data'; // add only if you use it
-// import wixWindow from 'wix-window'; // add only if you use it
+// src/pages/Home.d0bcj.js  (keep your file name)
+import { currentMember } from 'wix-members-frontend';
+import wixWindow from 'wix-window';
+import { getProfile } from 'backend/members.jsw';
 
-$w.onReady(function () {
-  // Home page logic here (optional)
-  // Example:
-  // $w('#someButton').onClick(() => wixLocation.to('/my-profile'));
+$w.onReady(async () => {
+  try {
+    const { member } = await currentMember.getMember();
+    const userId = member?._id;
+    if (!userId) return;
+
+    const row = await getProfile(userId);
+    if (!row?.handle) {
+      wixWindow.openLightbox('HandleSetup'); // exact lightbox name
+    }
+  } catch (e) {
+    console.error('Home handle check failed', e);
+  }
 });

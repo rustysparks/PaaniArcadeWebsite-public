@@ -1,0 +1,81 @@
+// backend/members.jsw
+import wixData from 'wix-data';
+import { members } from 'wix-members-backend';
+
+const PROFILES = 'RacerProfiles';
+const META = 'MembersMeta';
+
+// Return the caller's profile (or null)
+export async function getProfile(userId) {
+  if (!userId) throw new Error('Missing userId');
+  const r = await wixData.query(PROFILES)
+    .eq('userId', userId)
+    .limit(1)
+    .find({ suppressAuth: true });
+  return r.items[0] || null;
+}
+
+// Is a handle free? (case-insensitive)
+export async function isHandleAvailable(handle) {
+  const h = (handle || '').trim().toLowerCase();
+  if (!h) return false;
+  const r = await wixData.query(PROFILES)
+    .eq('handle_lc', h)
+    .limit(1)
+    .find({ suppressAuth: true });
+  return r.items.length === 0;
+}
+
+// Claim/update handle + profile, and upsert MembersMeta with email
+export async function claimHandle({ userId, handle, marketingOptIn, defaults = {} }) {
+  const clean = (handle || '').trim();
+  const lc = clean.toLowerCase();
+  if (!userId || !lc) throw new Error('Missing userId/handle');
+
+  // Uniqueness (ignore own row)
+  const taken = await wixData.query(PROFILES)
+    .eq('handle_lc', lc)
+    .find({ suppressAuth: true });
+  const other = taken.items.find(i => i.userId !== userId);
+  if (other) throw new Error('Handle already taken');
+
+  // Upsert profile
+  const q = await wixData.query(PROFILES)
+    .eq('userId', userId)
+    .limit(1)
+    .find({ suppressAuth: true });
+
+  const base = {
+    userId,
+    handle: clean,
+    handle_lc: lc,
+    slug: lc,
+    ...(typeof marketingOptIn === 'boolean' ? { marketingOptIn } : {}),
+    ...defaults
+  };
+
+  if (q.items.length) {
+    const row = { ...q.items[0], ...base };
+    await wixData.update(PROFILES, row, { suppressAuth: true });
+  } else {
+    await wixData.insert(PROFILES, base, { suppressAuth: true });
+  }
+
+  // Upsert MembersMeta with email + handle (best-effort)
+  try {
+    const m = await members.getMember(userId);
+    const email = (m?.contact?.emails?.[0]?.email || '').trim();
+    const metaQ = await wixData.query(META).eq('memberId', userId).limit(1)
+      .find({ suppressAuth: true });
+    if (metaQ.items.length) {
+      const meta = metaQ.items[0];
+      meta.email = email || meta.email || '';
+      meta.handle = lc;
+      await wixData.save(META, meta, { suppressAuth: true });
+    } else {
+      await wixData.save(META, { memberId: userId, email, handle: lc }, { suppressAuth: true });
+    }
+  } catch (_) { /* non-blocking */ }
+
+  return { ok: true, handle: clean };
+}
