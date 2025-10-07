@@ -1,84 +1,45 @@
+// Edit Profile (/blank)
+
+// ===== Imports =====
 import wixData from 'wix-data';
 import { currentMember } from 'wix-members-frontend';
+import wixWindow from 'wix-window';
+
 import { createVideo, getMyVideos, deleteVideo } from 'backend/video.jsw';
+import { getProfile } from 'backend/members.jsw';
+
+// ===== Dataset IDs on this page (from your screenshot) =====
+const EDIT_DATASET_ID     = '#profileDataset'; // main dataset (12 connected elements)
+const OPTIONAL_DATASET_ID = '#dataset1';       // secondary dataset (3 connected elements)
+
+// ===== Element IDs expected on this page =====
+// #uplAvatar, #imgAvatar, #uplCover, #imgCover, #btnSaveProfile, #saveHint
+// #repMyVideos, #btnAddVideo, #inpYoutubeUrl, #inpVidTitle, #inpVidDesc
+
+// ===== Globals =====
+let gUserId = null;
+let gProfileId = null;
 let uploadsInProgress = 0;
 
+// ===== Helpers =====
 function lockSave(lock) {
-  $w('#btnSaveProfile')?.[lock ? 'disable' : 'enable']();
+  const btn = $w('#btnSaveProfile');
+  if (btn && typeof btn.enable === 'function' && typeof btn.disable === 'function') {
+    lock ? btn.disable() : btn.enable();
+  }
 }
-
 function beginUpload() {
   uploadsInProgress += 1;
   lockSave(true);
-  $w('#saveHint')?.show(); // optional text: “Uploading…please wait”
+  $w('#saveHint')?.show?.();
 }
-
 function endUpload() {
   uploadsInProgress = Math.max(0, uploadsInProgress - 1);
   if (uploadsInProgress === 0) {
     lockSave(false);
-    $w('#saveHint')?.hide();
+    $w('#saveHint')?.hide?.();
   }
 }
-
-$w.onReady(async () => {
-  // good habit: wait for dataset
-  await $w('#editProfileDataset').onReady();
-
-  // ===== Avatar upload =====
-  $w('#uplAvatar').onChange(async () => {
-    if (!$w('#uplAvatar').value?.length) return; // user canceled
-    beginUpload();
-    try {
-      // Start the upload; returns file info object
-      const file = await $w('#uplAvatar').startUpload();
-      // Instant preview
-      if (file?.fileUrl) $w('#imgAvatar').src = file.fileUrl;
-      // Since the upload button is CONNECTED to the Avatar field,
-      // the dataset field is now set; “Save Changes” will persist it.
-    } catch (err) {
-      console.error('Avatar upload failed:', err);
-      // Optional: show a message to the user
-    } finally {
-      endUpload();
-    }
-  });
-
-  // ===== Cover upload =====
-  $w('#uplCover').onChange(async () => {
-    if (!$w('#uplCover').value?.length) return;
-    beginUpload();
-    try {
-      const file = await $w('#uplCover').startUpload();
-      if (file?.fileUrl) $w('#imgCover').src = file.fileUrl;
-    } catch (err) {
-      console.error('Cover upload failed:', err);
-    } finally {
-      endUpload();
-    }
-  });
-
-  // ===== Save Changes =====
-  $w('#btnSaveProfile').onClick(async () => {
-    if (uploadsInProgress > 0) {
-      // Optional guard; you can also just disable the button during uploads
-      return;
-    }
-    try {
-      await $w('#editProfileDataset').save();
-      // Optional: toast/snackbar that changes were saved
-    } catch (err) {
-      console.error('Save failed:', err);
-    }
-  });
-});
-
-
-// Globals
-let gUserId = null;
-let gProfileId = null;
-
-// ---------- helpers ----------
 function toYouTubeWatchUrl(url) {
   if (!url) return '';
   try {
@@ -92,25 +53,23 @@ function toYouTubeWatchUrl(url) {
   }
 }
 
-// Bind how each repeater item displays
+// Video repeater item renderer
 function wireVideoRepeater() {
+  if (!$w('#repMyVideos')) return;
   $w('#repMyVideos').onItemReady(($item, item) => {
-    // title & description
     $item('#txtMyVidTitle').text = item.title || '';
     $item('#txtMyVidDesc').text  = item.description || '';
 
-    // video player
     const url = toYouTubeWatchUrl(item.youtubeUrl || '');
-    if ($item('#vpVideo').videoUrl !== undefined) {
+    if ($item('#vpVideo')?.videoUrl !== undefined) {
       $item('#vpVideo').videoUrl = url;
-    } else if ($item('#vpVideo').src !== undefined) {
+    } else if ($item('#vpVideo')?.src !== undefined) {
       $item('#vpVideo').src = url;
     }
-    if ($item('#vpVideo').autoPlay !== undefined) $item('#vpVideo').autoPlay = false;
-    if ($item('#vpVideo').controls  !== undefined) $item('#vpVideo').controls  = true;
+    if ($item('#vpVideo')?.autoPlay !== undefined) $item('#vpVideo').autoPlay = false;
+    if ($item('#vpVideo')?.controls  !== undefined) $item('#vpVideo').controls  = true;
 
-    // delete
-    $item('#btnDeleteVideo').onClick(async () => {
+    $item('#btnDeleteVideo')?.onClick(async () => {
       try {
         await deleteVideo(item._id);
         await loadMyVideos();
@@ -123,21 +82,18 @@ function wireVideoRepeater() {
 
 // Load videos for this member
 async function loadMyVideos() {
-  if (!gUserId || !gProfileId) return;
+  if (!gUserId || !gProfileId || !$w('#repMyVideos')) return;
   const videos = await getMyVideos({ userId: gUserId, profileId: gProfileId });
   $w('#repMyVideos').data = videos || [];
 }
 
 // Create a new video from inputs
 async function addVideoFromInputs() {
-  const youtubeUrl = ($w('#inpYoutubeUrl').value || '').trim();
-  const title      = ($w('#inpVidTitle').value || '').trim();
-  const description = ($w('#inpVidDesc').value || '').trim();
+  const youtubeUrl  = ($w('#inpYoutubeUrl')?.value || '').trim();
+  const title       = ($w('#inpVidTitle')?.value || '').trim();
+  const description = ($w('#inpVidDesc')?.value || '').trim();
+  if (!youtubeUrl) return;
 
-  if (!youtubeUrl) {
-    // feel free to show a message to the user here
-    return;
-  }
   await createVideo({
     profileId: gProfileId,
     userId: gUserId,
@@ -147,39 +103,101 @@ async function addVideoFromInputs() {
     isPublic: true
   });
 
-  // clear inputs and refresh
-  $w('#inpYoutubeUrl').value = '';
-  $w('#inpVidTitle').value   = '';
-  $w('#inpVidDesc').value    = '';
+  if ($w('#inpYoutubeUrl')) $w('#inpYoutubeUrl').value = '';
+  if ($w('#inpVidTitle'))   $w('#inpVidTitle').value   = '';
+  if ($w('#inpVidDesc'))    $w('#inpVidDesc').value    = '';
+
   await loadMyVideos();
 }
 
-// ---------- page init ----------
+// Safely wait for a dataset by ID (if it exists and supports onReady)
+function datasetReady(id) {
+  try {
+    const ds = $w(id);
+    if (ds && typeof ds.onReady === 'function') {
+      return new Promise(resolve => ds.onReady(resolve));
+    }
+  } catch (_) {} // element may not exist; ignore
+  return Promise.resolve();
+}
+
+// ===== Page init =====
 $w.onReady(async () => {
-  // (Optional) wait for the profile dataset if you use it elsewhere
-  if ($w('#profileDataset')) {
-    try { await $w('#profileDataset').onReady(); } catch (_) {}
+  try {
+    // 0) Prevents “onReady callback must be a function” errors
+    await datasetReady(EDIT_DATASET_ID);
+    await datasetReady(OPTIONAL_DATASET_ID);
+
+    // 1) Who’s logged in?
+    const member = await currentMember.getMember();   // fixed (no destructuring)
+    if (!member) return;
+    gUserId = member._id;
+
+    // 2) Handle gate: open HandleSetup if no handle yet
+    const row = await getProfile(gUserId);
+    if (!row?.handle) {
+      wixWindow.openLightbox('HandleSetup');          // exact lightbox name
+    }
+
+    // 3) Ensure we have a RacerProfiles row to attach videos to
+    let r = await wixData.query('RacerProfiles').eq('userId', gUserId).limit(1).find();
+    let profile = r.items[0];
+    if (!profile) {
+      profile = await wixData.insert('RacerProfiles', { userId: gUserId });
+    }
+    gProfileId = profile._id;
+
+    // 4) Avatar upload
+    if ($w('#uplAvatar')?.onChange) {
+      $w('#uplAvatar').onChange(async () => {
+        if (!$w('#uplAvatar').value?.length) return;
+        beginUpload();
+        try {
+          const file = await $w('#uplAvatar').startUpload();
+          if (file?.fileUrl && $w('#imgAvatar')) $w('#imgAvatar').src = file.fileUrl;
+        } catch (err) {
+          console.error('Avatar upload failed:', err);
+        } finally {
+          endUpload();
+        }
+      });
+    }
+
+    // 5) Cover upload
+    if ($w('#uplCover')?.onChange) {
+      $w('#uplCover').onChange(async () => {
+        if (!$w('#uplCover').value?.length) return;
+        beginUpload();
+        try {
+          const file = await $w('#uplCover').startUpload();
+          if (file?.fileUrl && $w('#imgCover')) $w('#imgCover').src = file.fileUrl;
+        } catch (err) {
+          console.error('Cover upload failed:', err);
+        } finally {
+          endUpload();
+        }
+      });
+    }
+
+    // 6) Save Changes (saves the main dataset)
+    if ($w('#btnSaveProfile')?.onClick) {
+      $w('#btnSaveProfile').onClick(async () => {
+        if (uploadsInProgress > 0) return;
+        try {
+          const ds = $w(EDIT_DATASET_ID);
+          if (ds?.save) await ds.save();
+        } catch (err) {
+          console.error('Save failed:', err);
+        }
+      });
+    }
+
+    // 7) Videos section
+    wireVideoRepeater();
+    $w('#btnAddVideo')?.onClick(addVideoFromInputs);
+    await loadMyVideos();
+
+  } catch (e) {
+    console.error('Edit Profile init failed', e);
   }
-
-  // who’s logged in?
-  const { member } = await currentMember.getMember();
-  if (!member) return;
-  gUserId = member._id;
-
-  // find (or create) their RacerProfiles row so we have profileId
-  let r = await wixData.query('RacerProfiles').eq('userId', gUserId).limit(1).find();
-  let profile = r.items[0];
-  if (!profile) {
-    // create a minimal row if none exists yet
-    const inserted = await wixData.insert('RacerProfiles', { userId: gUserId });
-    profile = inserted;
-  }
-  gProfileId = profile._id;
-
-  // wire UI
-  wireVideoRepeater();
-  $w('#btnAddVideo').onClick(addVideoFromInputs);
-
-  // initial load
-  await loadMyVideos();
 });

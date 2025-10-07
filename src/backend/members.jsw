@@ -75,7 +75,7 @@ export async function claimHandle({ userId, handle, marketingOptIn, defaults = {
     } else {
       await wixData.save(META, { memberId: userId, email, handle: lc }, { suppressAuth: true });
     }
-  } catch (_) { /* non-blocking */ }
+  } catch (_) { /* ignore */ }
 
   return { ok: true, handle: clean };
 }
