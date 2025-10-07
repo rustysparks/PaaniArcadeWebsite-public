@@ -1,7 +1,4 @@
 // Edit Profile (/blank)
-// Scopes datasets to the logged-in member, ensures a row exists (so inputs are editable),
-// keeps uploads & videos, and opens the handle lightbox if needed.
-
 import wixData from 'wix-data';
 import wixLocation from 'wix-location';
 import { currentMember } from 'wix-members-frontend';
@@ -11,45 +8,100 @@ import { createVideo, getMyVideos, deleteVideo } from 'backend/video.jsw';
 import { getProfile } from 'backend/members.jsw';
 
 const PROFILES = 'RacerProfiles';
-
-// Dataset IDs (from your Editor)
-const EDIT_DATASET_ID     = '#profileDataset'; // 12 connected elements
-const OPTIONAL_DATASET_ID = '#dataset1';       // 3 connected elements
-
-// Elements used (ensure they exist)
-// #uplAvatar, #imgAvatar, #uplCover, #imgCover, #btnSaveProfile, #saveHint
-// #repMyVideos, #btnAddVideo, #inpYoutubeUrl, #inpVidTitle, #inpVidDesc
-// #btnViewPublicProfile (optional button to go to /profile/{slug})
+const EDIT_DATASET_ID     = '#profileDataset'; // 12 elements
+const OPTIONAL_DATASET_ID = '#dataset1';       // 3 elements
 
 let gUserId = null;
 let gProfileId = null;
 let uploadsInProgress = 0;
 
-/* ---------- helpers ---------- */
-function lockSave(lock) {
-  const btn = $w('#btnSaveProfile');
-  if (btn?.enable && btn?.disable) (lock ? btn.disable() : btn.enable());
-}
-function beginUpload() { uploadsInProgress += 1; lockSave(true); $w('#saveHint')?.show?.(); }
-function endUpload()   { uploadsInProgress = Math.max(0, uploadsInProgress - 1); if (!uploadsInProgress) { lockSave(false); $w('#saveHint')?.hide?.(); } }
+$w.onReady(init);
 
-function toYouTubeWatchUrl(url) {
-  if (!url) return '';
+async function init() {
   try {
-    const u = new URL(url);
-    if (u.hostname.includes('youtu.be')) return `https://www.youtube.com/watch?v=${u.pathname.slice(1)}`;
-    return url;
-  } catch { return url; }
+    // Who's logged in?
+    const m = await currentMember.getMember();
+    if (!m) return;
+    gUserId = m._id;
+
+    // Ensure the row exists first
+    let r = await wixData.query(PROFILES).eq('userId', gUserId).limit(1).find();
+    let profile = r.items[0];
+    if (!profile) profile = await wixData.insert(PROFILES, { userId: gUserId });
+    gProfileId = profile._id;
+
+    // Gate: ask for handle if missing
+    const row = await getProfile(gUserId);
+    if (!row?.handle) wixWindow.openLightbox('HandleSetup');
+
+    // Scope datasets to THIS user and switch to write mode
+    await bindDataset(EDIT_DATASET_ID, gUserId);
+    await bindDataset(OPTIONAL_DATASET_ID, gUserId);
+
+    // Optional “View Public Profile” button -> /profile/{slug}
+    if (row?.slug && $w('#btnViewPublicProfile')) {
+      $w('#btnViewPublicProfile').onClick(() => wixLocation.to(`/profile/${row.slug}`));
+    }
+
+    // Uploads
+    wireUploads();
+
+    // Videos
+    wireVideoRepeater();
+    $w('#btnAddVideo')?.onClick(addVideoFromInputs);
+    await loadMyVideos();
+  } catch (e) {
+    console.error('Edit Profile init failed', e);
+  }
 }
 
-function datasetReady(id) {
+async function bindDataset(sel, userId) {
   try {
-    const ds = $w(id);
-    if (ds && typeof ds.onReady === 'function') return new Promise(res => ds.onReady(res));
-  } catch (_) {}
-  return Promise.resolve();
+    const ds = $w(sel);
+    if (!ds?.setFilter) return;
+    // write mode (if supported)
+    if (typeof ds.setMode === 'function') ds.setMode('write');
+    await ds.setFilter(wixData.filter().eq('userId', userId));
+    await ds.refresh(); // important if we just created the row
+  } catch (e) {
+    console.warn('bindDataset failed for', sel, e);
+  }
 }
 
+/* ===== uploads ===== */
+function wireUploads() {
+  $w('#uplAvatar')?.onChange(async () => {
+    if (!$w('#uplAvatar').value?.length) return;
+    beginUpload();
+    try {
+      const f = await $w('#uplAvatar').startUpload();
+      if (f?.fileUrl && $w('#imgAvatar')) $w('#imgAvatar').src = f.fileUrl;
+    } catch (e) { console.error('Avatar upload failed', e); }
+    finally { endUpload(); }
+  });
+
+  $w('#uplCover')?.onChange(async () => {
+    if (!$w('#uplCover').value?.length) return;
+    beginUpload();
+    try {
+      const f = await $w('#uplCover').startUpload();
+      if (f?.fileUrl && $w('#imgCover')) $w('#imgCover').src = f.fileUrl;
+    } catch (e) { console.error('Cover upload failed', e); }
+    finally { endUpload(); }
+  });
+
+  $w('#btnSaveProfile')?.onClick(async () => {
+    if (uploadsInProgress > 0) return;
+    try {
+      const ds = $w(EDIT_DATASET_ID);
+      if (ds?.save) await ds.save();
+    } catch (e) {
+      console.error('Save failed', e);
+    }
+  });
+}
+
+/* ===== videos ===== */
 function wireVideoRepeater() {
   if (!$w('#repMyVideos')) return;
   $w('#repMyVideos').onItemReady(($item, item) => {
@@ -84,92 +136,22 @@ async function addVideoFromInputs() {
   if (!youtubeUrl) return;
 
   await createVideo({ profileId: gProfileId, userId: gUserId, youtubeUrl, title, description, isPublic: true });
+
   if ($w('#inpYoutubeUrl')) $w('#inpYoutubeUrl').value = '';
   if ($w('#inpVidTitle'))   $w('#inpVidTitle').value   = '';
   if ($w('#inpVidDesc'))    $w('#inpVidDesc').value    = '';
+
   await loadMyVideos();
 }
 
-/* ---------- page init ---------- */
-$w.onReady(async () => {
+/* ===== misc helpers ===== */
+function toYouTubeWatchUrl(url) {
+  if (!url) return '';
   try {
-    await datasetReady(EDIT_DATASET_ID);
-    await datasetReady(OPTIONAL_DATASET_ID);
-
-    const m = await currentMember.getMember();
-    if (!m) return;
-    gUserId = m._id;
-
-    // filter datasets to this user & set write mode
-    const mainDs = $w(EDIT_DATASET_ID);
-    if (mainDs?.setFilter) {
-      await mainDs.setFilter(wixData.filter().eq('userId', gUserId));
-      if (typeof mainDs.setMode === 'function') mainDs.setMode('write');
-    }
-    const optDs = $w(OPTIONAL_DATASET_ID);
-    if (optDs?.setFilter) {
-      await optDs.setFilter(wixData.filter().eq('userId', gUserId));
-      if (typeof optDs.setMode === 'function') optDs.setMode('write');
-    }
-
-    // ensure a row exists so inputs are editable
-    let r = await wixData.query(PROFILES).eq('userId', gUserId).limit(1).find();
-    let profile = r.items[0];
-    if (!profile) {
-      profile = await wixData.insert(PROFILES, { userId: gUserId });
-      if (mainDs?.refresh) await mainDs.refresh();
-    }
-    try { if (mainDs?.getTotalCount && (await mainDs.getTotalCount()) > 0) mainDs.setCurrentItemIndex(0); } catch (_) {}
-    gProfileId = profile._id;
-
-    // if no handle yet, prompt
-    const row = await getProfile(gUserId);
-    if (!row?.handle) wixWindow.openLightbox('HandleSetup');
-
-    // optional: go to public profile /profile/{slug}
-    if (row?.slug && $w('#btnViewPublicProfile')) {
-      $w('#btnViewPublicProfile').onClick(() => wixLocation.to(`/profile/${row.slug}`));
-    }
-
-    // uploads
-    if ($w('#uplAvatar')?.onChange) {
-      $w('#uplAvatar').onChange(async () => {
-        if (!$w('#uplAvatar').value?.length) return;
-        beginUpload();
-        try {
-          const file = await $w('#uplAvatar').startUpload();
-          if (file?.fileUrl && $w('#imgAvatar')) $w('#imgAvatar').src = file.fileUrl;
-        } catch (err) { console.error('Avatar upload failed:', err); }
-        finally { endUpload(); }
-      });
-    }
-
-    if ($w('#uplCover')?.onChange) {
-      $w('#uplCover').onChange(async () => {
-        if (!$w('#uplCover').value?.length) return;
-        beginUpload();
-        try {
-          const file = await $w('#uplCover').startUpload();
-          if (file?.fileUrl && $w('#imgCover')) $w('#imgCover').src = file.fileUrl;
-        } catch (err) { console.error('Cover upload failed:', err); }
-        finally { endUpload(); }
-      });
-    }
-
-    if ($w('#btnSaveProfile')?.onClick) {
-      $w('#btnSaveProfile').onClick(async () => {
-        if (uploadsInProgress > 0) return;
-        try { if (mainDs?.save) await mainDs.save(); }
-        catch (err) { console.error('Save failed:', err); }
-      });
-    }
-
-    // videos
-    wireVideoRepeater();
-    $w('#btnAddVideo')?.onClick(addVideoFromInputs);
-    await loadMyVideos();
-
-  } catch (e) {
-    console.error('Edit Profile init failed', e);
-  }
-});
+    const u = new URL(url);
+    if (u.hostname.includes('youtu.be')) return `https://www.youtube.com/watch?v=${u.pathname.slice(1)}`;
+    return url;
+  } catch { return url; }
+}
+function beginUpload() { uploadsInProgress += 1; $w('#btnSaveProfile')?.disable?.(); $w('#saveHint')?.show?.(); }
+function endUpload()   { uploadsInProgress = Math.max(0, uploadsInProgress - 1); if (!uploadsInProgress) { $w('#btnSaveProfile')?.enable?.(); $w('#saveHint')?.hide?.(); } }
