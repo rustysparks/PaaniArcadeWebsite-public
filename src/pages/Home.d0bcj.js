@@ -1,13 +1,11 @@
-// Home page — show the handle lightbox if logged-in user has no handle
-
-import { currentMember } from 'wix-members-frontend';
 import wixWindow from 'wix-window';
+import { currentMember } from 'wix-members-frontend';
 import { getProfile } from 'backend/members.jsw';
 
 $w.onReady(async () => {
   try {
     const m = await currentMember.getMember();
-    if (!m) return; // not logged in
+    if (!m) return;
     const row = await getProfile(m._id);
     if (!row?.handle) wixWindow.openLightbox('HandleSetup');
   } catch (e) {

@@ -1,13 +1,15 @@
 // backend/members.jsw
 import wixData from 'wix-data';
-import { members } from 'wix-members-backend';
 
 const PROFILES = 'RacerProfiles';
-const META = 'MembersMeta';
 
-// Return the caller's profile (or null)
-export async function getProfile(userId) {
-  if (!userId) throw new Error('Missing userId');
+// OPTIONAL: put your real Media Manager URLs here if you want auto-defaults
+const DEFAULT_AVATAR = ''; // e.g. 'wix:image://v1/.../default-avatar.png#originWidth=...'
+const DEFAULT_COVER  = ''; // e.g. 'wix:image://v1/.../default-cover.jpg#originWidth=...'
+
+// ---------- helpers ----------
+async function findByUserId(userId) {
+  if (!userId) return null;
   const r = await wixData.query(PROFILES)
     .eq('userId', userId)
     .limit(1)
@@ -15,67 +17,74 @@ export async function getProfile(userId) {
   return r.items[0] || null;
 }
 
-// Is a handle free? (case-insensitive)
-export async function isHandleAvailable(handle) {
-  const h = (handle || '').trim().toLowerCase();
-  if (!h) return false;
+async function findByHandleLc(handleLc) {
+  if (!handleLc) return null;
   const r = await wixData.query(PROFILES)
-    .eq('handle_lc', h)
+    .eq('handle_lc', handleLc)
     .limit(1)
     .find({ suppressAuth: true });
-  return r.items.length === 0;
+  return r.items[0] || null;
 }
 
-// Claim/update handle + profile, and upsert MembersMeta with email
-export async function claimHandle({ userId, handle, marketingOptIn, defaults = {} }) {
-  const clean = (handle || '').trim();
-  const lc = clean.toLowerCase();
-  if (!userId || !lc) throw new Error('Missing userId/handle');
+// ---------- public API ----------
+export async function getProfile(userId) {
+  try { return await findByUserId(userId); }
+  catch (e) { console.warn('getProfile failed', e); return null; }
+}
 
-  // Uniqueness (ignore own row)
-  const taken = await wixData.query(PROFILES)
-    .eq('handle_lc', lc)
-    .find({ suppressAuth: true });
-  const other = taken.items.find(i => i.userId !== userId);
-  if (other) throw new Error('Handle already taken');
-
-  // Upsert profile
-  const q = await wixData.query(PROFILES)
-    .eq('userId', userId)
-    .limit(1)
-    .find({ suppressAuth: true });
-
-  const base = {
-    userId,
-    handle: clean,
-    handle_lc: lc,
-    slug: lc,
-    ...(typeof marketingOptIn === 'boolean' ? { marketingOptIn } : {}),
-    ...defaults
-  };
-
-  if (q.items.length) {
-    const row = { ...q.items[0], ...base };
-    await wixData.update(PROFILES, row, { suppressAuth: true });
-  } else {
-    await wixData.insert(PROFILES, base, { suppressAuth: true });
-  }
-
-  // Upsert MembersMeta with email + handle (best-effort)
+export async function isHandleAvailable(handle, userId) {
   try {
-    const m = await members.getMember(userId);
-    const email = (m?.contact?.emails?.[0]?.email || '').trim();
-    const metaQ = await wixData.query(META).eq('memberId', userId).limit(1)
-      .find({ suppressAuth: true });
-    if (metaQ.items.length) {
-      const meta = metaQ.items[0];
-      meta.email = email || meta.email || '';
-      meta.handle = lc;
-      await wixData.save(META, meta, { suppressAuth: true });
-    } else {
-      await wixData.save(META, { memberId: userId, email, handle: lc }, { suppressAuth: true });
-    }
-  } catch (_) { /* ignore */ }
+    const lc = String(handle || '').trim().toLowerCase();
+    if (!lc) return false;
+    const hit = await findByHandleLc(lc);
+    if (!hit) return true;
+    // allow the current user to “reuse” their own handle
+    return !!(userId && hit.userId === userId);
+  } catch (e) {
+    console.warn('isHandleAvailable failed', e);
+    return false;
+  }
+}
 
-  return { ok: true, handle: clean };
+/**
+ * Claim or change a handle for a user.
+ * Returns { ok:true, profile } or { error:'HANDLE_TAKEN'|'BAD_INPUT'|'SERVER_ERROR' }
+ */
+export async function claimHandle(userId, handle, marketingOptIn = false) {
+  try {
+    const h  = String(handle || '').trim();
+    const lc = h.toLowerCase();
+    if (!userId || !h) return { error: 'BAD_INPUT' };
+
+    // unique across all users (except the caller)
+    const dupe = await wixData.query(PROFILES)
+      .eq('handle_lc', lc)
+      .ne('userId', userId)
+      .limit(1)
+      .find({ suppressAuth: true });
+    if (dupe.items.length) return { error: 'HANDLE_TAKEN' };
+
+    // upsert by userId
+    let row = await findByUserId(userId);
+    const data = {
+      userId,
+      handle: h,
+      handle_lc: lc,
+      slug: lc,                      // your dynamic page is /profile/{slug}
+      marketingOptIn: !!marketingOptIn
+    };
+
+    if (!row) {
+      if (DEFAULT_AVATAR) data.avatar = DEFAULT_AVATAR;
+      if (DEFAULT_COVER)  data.coverImage = DEFAULT_COVER;
+      row = await wixData.insert(PROFILES, data, { suppressAuth: true });
+    } else {
+      row = await wixData.update(PROFILES, { ...row, ...data }, { suppressAuth: true });
+    }
+
+    return { ok: true, profile: row };
+  } catch (e) {
+    console.error('claimHandle failed', e);
+    return { error: 'SERVER_ERROR' };
+  }
 }

@@ -1,28 +1,22 @@
 // backend/marketing.jsw
-// Safe, best-effort CRM hook so the UI never crashes.
-// You can wire this to your real CRM later.
-
+// Safe CRM helper. Never throws at the UI.
 import wixCrm from 'wix-crm-backend';
 
-/**
- * Try to mark a member opted-in. Quietly succeeds if not available.
- * @param {boolean} optIn
- * @param {string} [emailOrContactId]
- */
 export async function setEmailMarketingOptIn(optIn, emailOrContactId) {
   try {
     if (!optIn) return { ok: true, optedIn: false };
 
-    const has = (fn) => wixCrm && typeof wixCrm[fn] === 'function';
+    const has = fn => wixCrm && typeof wixCrm[fn] === 'function';
 
+    // If an email is passed, create a contact so we have an ID
     let contactId = emailOrContactId || null;
     if (emailOrContactId?.includes?.('@') && has('createContact')) {
-      const contact = await wixCrm.createContact({ emails: [emailOrContactId] }).catch(() => null);
-      contactId = contact?._id || contactId;
+      const c = await wixCrm.createContact({ emails: [emailOrContactId] }).catch(() => null);
+      contactId = c?._id || contactId;
     }
 
-    if (contactId && has('emailContact')) { try { await wixCrm.emailContact(contactId); } catch {} }
-    if (contactId && has('addTag'))       { try { await wixCrm.addTag(contactId, 'Raffle Eligible'); } catch {} }
+    if (contactId && has('emailContact')) await wixCrm.emailContact(contactId).catch(() => {});
+    if (contactId && has('addTag'))       await wixCrm.addTag(contactId, 'Raffle Eligible').catch(() => {});
 
     return { ok: true, optedIn: true };
   } catch (e) {
