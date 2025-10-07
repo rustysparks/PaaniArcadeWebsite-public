@@ -4,6 +4,10 @@ import wixWindow from 'wix-window';
 import { setEmailMarketingOptIn } from 'backend/marketing.jsw';
 import { getProfile, isHandleAvailable, claimHandle } from 'backend/members.jsw';
 
+// after you computed marketingOptIn:
+const m = await currentMember.getMember();   // you’re already doing this
+await setEmailMarketingOptIn(marketingOptIn, m?.loginEmail);  // <-- add email
+
 // TODO: replace with your actual Media Manager URLs
 const DEFAULT_AVATAR = 'wix:image://v1/.../default-avatar.png';
 const DEFAULT_COVER  = 'wix:image://v1/.../default-cover.jpg';
