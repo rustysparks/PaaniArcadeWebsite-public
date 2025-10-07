@@ -1,5 +1,6 @@
 // Edit Profile (/blank)
-// — keeps uploads + videos, adds dataset scoping & write mode, and handle gate —
+// Scopes datasets to the logged-in member, ensures a row exists (so inputs are editable),
+// keeps uploads & videos, and opens the handle lightbox if needed.
 
 import wixData from 'wix-data';
 import wixLocation from 'wix-location';
@@ -11,21 +12,20 @@ import { getProfile } from 'backend/members.jsw';
 
 const PROFILES = 'RacerProfiles';
 
-// Dataset IDs on this page (from your screenshot)
-const EDIT_DATASET_ID     = '#profileDataset'; // main dataset (12 connected elements)
-const OPTIONAL_DATASET_ID = '#dataset1';       // secondary dataset (3 connected elements)
+// Dataset IDs (from your Editor)
+const EDIT_DATASET_ID     = '#profileDataset'; // 12 connected elements
+const OPTIONAL_DATASET_ID = '#dataset1';       // 3 connected elements
 
-// Element IDs used (make sure they exist on the page)
+// Elements used (ensure they exist)
 // #uplAvatar, #imgAvatar, #uplCover, #imgCover, #btnSaveProfile, #saveHint
 // #repMyVideos, #btnAddVideo, #inpYoutubeUrl, #inpVidTitle, #inpVidDesc
-// #btnViewPublicProfile  (optional but recommended)
+// #btnViewPublicProfile (optional button to go to /profile/{slug})
 
 let gUserId = null;
 let gProfileId = null;
 let uploadsInProgress = 0;
 
-/* ---------------- helpers ---------------- */
-
+/* ---------- helpers ---------- */
 function lockSave(lock) {
   const btn = $w('#btnSaveProfile');
   if (btn?.enable && btn?.disable) (lock ? btn.disable() : btn.enable());
@@ -57,7 +57,6 @@ function wireVideoRepeater() {
     $item('#txtMyVidDesc').text  = item.description || '';
 
     const url = toYouTubeWatchUrl(item.youtubeUrl || '');
-    // Only set the player if we have a valid URL to avoid SDK "src cannot be empty" errors
     if (url) {
       if ($item('#vpVideo')?.videoUrl !== undefined) $item('#vpVideo').videoUrl = url;
       else if ($item('#vpVideo')?.src !== undefined) $item('#vpVideo').src = url;
@@ -66,12 +65,8 @@ function wireVideoRepeater() {
     }
 
     $item('#btnDeleteVideo')?.onClick(async () => {
-      try {
-        await deleteVideo(item._id);
-        await loadMyVideos();
-      } catch (e) {
-        console.error('Delete failed', e);
-      }
+      try { await deleteVideo(item._id); await loadMyVideos(); }
+      catch (e) { console.error('Delete failed', e); }
     });
   });
 }
@@ -95,20 +90,17 @@ async function addVideoFromInputs() {
   await loadMyVideos();
 }
 
-/* ---------------- page init ---------------- */
-
+/* ---------- page init ---------- */
 $w.onReady(async () => {
   try {
-    // 0) Make sure datasets (if present) are initialized
     await datasetReady(EDIT_DATASET_ID);
     await datasetReady(OPTIONAL_DATASET_ID);
 
-    // 1) Who’s logged in?
-    const m = await currentMember.getMember();   // no destructuring; Wix returns a member object
-    if (!m) return;                              // not logged in
+    const m = await currentMember.getMember();
+    if (!m) return;
     gUserId = m._id;
 
-    // 2) Scope datasets to THIS member + ensure write mode
+    // filter datasets to this user & set write mode
     const mainDs = $w(EDIT_DATASET_ID);
     if (mainDs?.setFilter) {
       await mainDs.setFilter(wixData.filter().eq('userId', gUserId));
@@ -120,22 +112,26 @@ $w.onReady(async () => {
       if (typeof optDs.setMode === 'function') optDs.setMode('write');
     }
 
-    // 3) Ensure a RacerProfiles row exists so inputs are bound to something
+    // ensure a row exists so inputs are editable
     let r = await wixData.query(PROFILES).eq('userId', gUserId).limit(1).find();
     let profile = r.items[0];
-    if (!profile) profile = await wixData.insert(PROFILES, { userId: gUserId });
+    if (!profile) {
+      profile = await wixData.insert(PROFILES, { userId: gUserId });
+      if (mainDs?.refresh) await mainDs.refresh();
+    }
+    try { if (mainDs?.getTotalCount && (await mainDs.getTotalCount()) > 0) mainDs.setCurrentItemIndex(0); } catch (_) {}
     gProfileId = profile._id;
 
-    // 4) Handle gate – if no handle yet, open the setup lightbox
+    // if no handle yet, prompt
     const row = await getProfile(gUserId);
     if (!row?.handle) wixWindow.openLightbox('HandleSetup');
 
-    // 5) "View Your Public Profile" button -> /{slug} (or change prefix if your dynamic page uses one)
+    // optional: go to public profile /profile/{slug}
     if (row?.slug && $w('#btnViewPublicProfile')) {
-      $w('#btnViewPublicProfile').onClick(() => wixLocation.to(`/${row.slug}`));
+      $w('#btnViewPublicProfile').onClick(() => wixLocation.to(`/profile/${row.slug}`));
     }
 
-    // 6) Avatar upload
+    // uploads
     if ($w('#uplAvatar')?.onChange) {
       $w('#uplAvatar').onChange(async () => {
         if (!$w('#uplAvatar').value?.length) return;
@@ -148,7 +144,6 @@ $w.onReady(async () => {
       });
     }
 
-    // 7) Cover upload
     if ($w('#uplCover')?.onChange) {
       $w('#uplCover').onChange(async () => {
         if (!$w('#uplCover').value?.length) return;
@@ -161,7 +156,6 @@ $w.onReady(async () => {
       });
     }
 
-    // 8) Save Changes (saves the main dataset)
     if ($w('#btnSaveProfile')?.onClick) {
       $w('#btnSaveProfile').onClick(async () => {
         if (uploadsInProgress > 0) return;
@@ -170,7 +164,7 @@ $w.onReady(async () => {
       });
     }
 
-    // 9) Videos
+    // videos
     wireVideoRepeater();
     $w('#btnAddVideo')?.onClick(addVideoFromInputs);
     await loadMyVideos();

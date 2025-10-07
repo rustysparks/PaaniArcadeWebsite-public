@@ -1,70 +1,32 @@
 // backend/marketing.jsw
-// Safe CRM helpers: try to opt a member into email marketing.
-// If the Wix CRM APIs aren’t available, we quietly succeed so the UI never errors.
+// Safe, best-effort CRM hook so the UI never crashes.
+// You can wire this to your real CRM later.
 
 import wixCrm from 'wix-crm-backend';
 
 /**
- * Main API used by the lightbox.
- * @param {boolean} optIn - true to opt into marketing; false = no change (quietly succeeds)
- * @param {string} [emailOrContactId] - optional login email or contactId to attach
- * @returns {{ok:boolean, optedIn?:boolean, error?:string}}
+ * Try to mark a member opted-in. Quietly succeeds if not available.
+ * @param {boolean} optIn
+ * @param {string} [emailOrContactId]
  */
 export async function setEmailMarketingOptIn(optIn, emailOrContactId) {
   try {
-    // Nothing to do if they didn't opt in
     if (!optIn) return { ok: true, optedIn: false };
 
-    // If no CRM lib or no functions, treat as success (don’t block UX)
     const has = (fn) => wixCrm && typeof wixCrm[fn] === 'function';
 
-    // If we have an email, create/get a contact so we have an ID
     let contactId = emailOrContactId || null;
-    if (emailOrContactId && emailOrContactId.includes?.('@') && has('createContact')) {
-      try {
-        const contact = await wixCrm.createContact({ emails: [emailOrContactId] });
-        contactId = contact?._id || contactId;
-      } catch (_) { /* ignore – we’ll proceed best-effort */ }
+    if (emailOrContactId?.includes?.('@') && has('createContact')) {
+      const contact = await wixCrm.createContact({ emails: [emailOrContactId] }).catch(() => null);
+      contactId = contact?._id || contactId;
     }
 
-    // Ensure email channel exists (best-effort)
-    if (contactId && has('emailContact')) {
-      try { await wixCrm.emailContact(contactId); } catch (_) {}
-    }
-
-    // Tag for segmentation (handy for raffles/audiences)
-    if (contactId && has('addTag')) {
-      try { await wixCrm.addTag(contactId, 'Raffle Eligible'); } catch (_) {}
-    }
+    if (contactId && has('emailContact')) { try { await wixCrm.emailContact(contactId); } catch {} }
+    if (contactId && has('addTag'))       { try { await wixCrm.addTag(contactId, 'Raffle Eligible'); } catch {} }
 
     return { ok: true, optedIn: true };
   } catch (e) {
-    // Never throw to the UI – just report best we can
     console.warn('setEmailMarketingOptIn failed', e);
-    return { ok: false, error: String(e) };
-  }
-}
-
-/**
- * Keeps your original helper as a convenience wrapper.
- * Accepts either a contactId or an email.
- */
-export async function subscribeMemberToMarketing(contactIdOrEmail) {
-  try {
-    const has = (fn) => wixCrm && typeof wixCrm[fn] === 'function';
-
-    let contactId = contactIdOrEmail;
-    if (contactIdOrEmail?.includes?.('@') && has('createContact')) {
-      const contact = await wixCrm.createContact({ emails: [contactIdOrEmail] }).catch(() => null);
-      contactId = contact?._id || contactIdOrEmail;
-    }
-
-    if (has('emailContact')) await wixCrm.emailContact(contactId);
-    if (has('addTag')) await wixCrm.addTag(contactId, 'Raffle Eligible');
-
-    return { ok: true };
-  } catch (e) {
-    console.warn('subscribeMemberToMarketing failed', e);
     return { ok: false, error: String(e) };
   }
 }

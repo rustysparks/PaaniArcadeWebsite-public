@@ -1,14 +1,14 @@
 // Lightbox: HandleSetup
-import { currentMember } from 'wix-members-frontend';
+
+import wixData from 'wix-data';
 import wixWindow from 'wix-window';
+import { currentMember } from 'wix-members-frontend';
+
 import { setEmailMarketingOptIn } from 'backend/marketing.jsw';
 import { getProfile, isHandleAvailable, claimHandle } from 'backend/members.jsw';
 
-// after you computed marketingOptIn:
-const m = await currentMember.getMember();   // you’re already doing this
-await setEmailMarketingOptIn(marketingOptIn, m?.loginEmail);  // <-- add email
-
-// TODO: replace with your actual Media Manager URLs
+const PROFILES = 'RacerProfiles';
+// TODO: replace with your actual Media Manager URLs (wix:image://v1/...)
 const DEFAULT_AVATAR = 'wix:image://v1/.../default-avatar.png';
 const DEFAULT_COVER  = 'wix:image://v1/.../default-cover.jpg';
 
@@ -17,15 +17,16 @@ const HANDLE_REGEX = /^[a-z0-9_.]{3,24}$/i;
 
 $w.onReady(async () => {
   if ($w('#chkMarketing')?.checked !== undefined) $w('#chkMarketing').checked = true;
-  clearError();
+  safeCollapse('#errHandleMsg');
 
+  // Prefill if they already have a row
   try {
-    const member = await currentMember.getMember();   // ← fixed (no destructuring)
-    if (!member) return wixWindow.lightbox.close({ ok: false, reason: 'NOT_LOGGED_IN' });
+    const m = await currentMember.getMember();
+    if (!m) return wixWindow.lightbox.close({ ok: false, reason: 'NOT_LOGGED_IN' });
 
-    const row = await getProfile(member._id);
+    const row = await getProfile(m._id);
     if (row) {
-      if ($w('#handleInput') && row.handle) $w('#handleInput').value = row.handle;
+      if ($w('#handleInput')?.value !== undefined && row.handle) $w('#handleInput').value = row.handle;
       if ($w('#chkMarketing')?.checked !== undefined && typeof row.marketingOptIn === 'boolean') {
         $w('#chkMarketing').checked = row.marketingOptIn;
       }
@@ -34,53 +35,62 @@ $w.onReady(async () => {
     console.warn('Prefill failed:', e);
   }
 
-  $w('#btnHandleSave')?.onClick(saveHandleAndConsent);
+  $w('#btnHandleSave').onClick(saveHandle);
 });
 
-async function saveHandleAndConsent() {
+async function saveHandle() {
   try {
-    $w('#btnHandleSave')?.disable();
-    clearError();
+    $w('#btnHandleSave')?.disable?.();
+    showError('');
 
-    const member = await currentMember.getMember();   // ← fixed
-    if (!member) throw new Error('NOT_LOGGED_IN');
-    const userId = member._id;
+    const m = await currentMember.getMember();
+    if (!m) throw new Error('NOT_LOGGED_IN');
+    const userId = m._id;
 
-    const raw = ($w('#handleInput')?.value || '').trim();
-    if (!raw) return showError('Please enter a handle.');
-    if (!HANDLE_REGEX.test(raw)) {
+    // 1) validate
+    const handle = ($w('#handleInput')?.value || '').trim();
+    if (!handle) return showError('Please enter a handle.');
+    if (!HANDLE_REGEX.test(handle)) {
       return showError('Handle must be 3–24 characters and can include letters, numbers, "." or "_".');
     }
-    const handle = raw.toLowerCase();
+    const handleLc = handle.toLowerCase();
 
-    // quick hint; final uniqueness enforced in claimHandle
-    if (!(await isHandleAvailable(handle))) { /* allow continue; backend will verify */ }
+    // 2) availability (backend rechecks)
+    const available = await isHandleAvailable(handle, userId);
+    if (!available) return showError('That handle is already taken. Please choose another.');
 
+    // 3) commit + defaults
     const marketingOptIn = !!$w('#chkMarketing')?.checked;
-    const defaults = {
+    await claimHandle(userId, {
+      handle,
+      handle_lc: handleLc,
+      slug: handleLc,               // dynamic page uses slug
+      marketingOptIn,
       commentsRequireApproval: true,
       commentsFriendsOnly: false,
       avatar: DEFAULT_AVATAR,
-      coverImage: DEFAULT_COVER
-    };
+      coverImage: DEFAULT_COVER,
+    });
 
-    await claimHandle({ userId, handle, marketingOptIn, defaults });
+    // 4) CRM (non-blocking)
     try { await setEmailMarketingOptIn(marketingOptIn); } catch (e) { console.warn('CRM opt-in failed', e); }
 
+    // 5) done
     wixWindow.lightbox.close({ ok: true, handle });
-  } catch (e) {
-    const msg = typeof e === 'string' ? e : (e?.message || 'Something went wrong. Please try again.');
-    if (msg.includes('taken')) showError('That handle is already taken. Please choose another.');
-    else showError(msg);
+  } catch (err) {
+    showError(typeof err === 'string' ? err : err?.message || 'Something went wrong. Please try again.');
   } finally {
-    $w('#btnHandleSave')?.enable();
+    $w('#btnHandleSave')?.enable?.();
   }
 }
 
+/* ------- helpers ------- */
 function showError(msg) {
   if ($w('#errHandleMsg')?.text !== undefined) {
     $w('#errHandleMsg').text = msg || '';
-    if (msg) $w('#errHandleMsg').expand?.(); else $w('#errHandleMsg').collapse?.();
-  } else if (msg) console.error(msg);
+    msg ? $w('#errHandleMsg').expand?.() : safeCollapse('#errHandleMsg');
+  } else if (msg) {
+    console.error(msg);
+  }
 }
-function clearError(){ showError(''); }
+function safeCollapse(sel) { try { $w(sel).collapse?.(); } catch (_) {} }

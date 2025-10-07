@@ -1,28 +1,46 @@
-// backend/members.js
+// backend/members.jsw
 import wixData from 'wix-data';
-import { mediaManager } from 'wix-media-backend'; // not required to read URLs, just for reference
-import { events } from 'wix-members-backend';     // members events
 
 const PROFILES = 'RacerProfiles';
 
-// Store your default asset URLs in constants (upload once to Media Manager)
-const DEFAULT_AVATAR = 'wix:image://v1/.../default-avatar.png';
-const DEFAULT_COVER  = 'wix:image://v1/.../default-cover.jpg';
+/** Get the current member's profile row (or null). */
+export async function getProfile(userId) {
+  if (!userId) return null;
+  const r = await wixData
+    .query(PROFILES)
+    .eq('userId', userId)
+    .limit(1)
+    .find({ suppressAuth: true });
+  return r.items[0] || null;
+}
 
-events.onMemberCreated(async (event) => {
-  const userId = event.member._id;
+/** Is a handle available? (optionally ignore the owner) */
+export async function isHandleAvailable(handle, excludeUserId) {
+  if (!handle) return false;
+  const lc = String(handle).toLowerCase();
+  const r = await wixData
+    .query(PROFILES)
+    .eq('handle_lc', lc)
+    .find({ suppressAuth: true });
+  return r.items.length === 0 || r.items.every(i => i.userId === excludeUserId);
+}
 
-  // if profile already exists, skip
-  const r = await wixData.query(PROFILES).eq('userId', userId).limit(1).find({ suppressAuth: true });
-  if (r.items.length) return;
+/** Upsert the member's profile with the chosen handle and any extra fields. */
+export async function claimHandle(userId, patch) {
+  if (!userId) throw new Error('NO_USER');
+  const lc = String(patch?.handle || patch?.slug || '').toLowerCase();
+  if (!lc) throw new Error('NO_HANDLE');
 
-  await wixData.insert(PROFILES, {
+  const set = {
+    ...patch,
     userId,
-    avatar: DEFAULT_AVATAR,
-    coverImage: DEFAULT_COVER,
-    commentsRequireApproval: true,
-    commentsFriendsOnly: false,
-    marketingOptIn: false,     // we’ll set this true if they consent later
-    racesCount: 0              // if you track this
-  }, { suppressAuth: true });
-});
+    handle_lc: lc,
+    slug: lc,
+  };
+
+  const existing = await getProfile(userId);
+  if (existing) {
+    return wixData.update(PROFILES, { ...existing, ...set }, { suppressAuth: true });
+  }
+  return wixData.insert(PROFILES, set, { suppressAuth: true });
+}
