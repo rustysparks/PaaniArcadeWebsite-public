@@ -1,10 +1,9 @@
-// Lightbox: HandleSetup
 import { currentMember } from 'wix-members-frontend';
 import wixWindow from 'wix-window';
 import { setEmailMarketingOptIn } from 'backend/marketing.jsw';
 import { getProfile, isHandleAvailable, claimHandle } from 'backend/members.jsw';
 
-// Replace these with your Media Manager URLs
+// replace with real Media Manager URLs
 const DEFAULT_AVATAR = 'wix:image://v1/.../default-avatar.png';
 const DEFAULT_COVER  = 'wix:image://v1/.../default-cover.jpg';
 
@@ -16,7 +15,7 @@ $w.onReady(async () => {
   clearError();
 
   try {
-    const { member } = await currentMember.getMember();
+    const member = await currentMember.getMember();   // FIXED
     if (!member) return wixWindow.lightbox.close({ ok: false, reason: 'NOT_LOGGED_IN' });
 
     const row = await getProfile(member._id);
@@ -38,7 +37,7 @@ async function saveHandleAndConsent() {
     $w('#btnHandleSave')?.disable();
     clearError();
 
-    const { member } = await currentMember.getMember();
+    const member = await currentMember.getMember();   // FIXED
     if (!member) throw new Error('NOT_LOGGED_IN');
     const userId = member._id;
 
@@ -49,9 +48,9 @@ async function saveHandleAndConsent() {
     }
     const handle = raw.toLowerCase();
 
-    // quick feedback; final check happens in claimHandle
+    // (quick hint; final uniqueness enforced in claimHandle)
     if (!(await isHandleAvailable(handle))) {
-      // not fatal—user might be editing their own handle; claimHandle verifies again
+      // allow continue; backend will allow if it's your own
     }
 
     const marketingOptIn = !!$w('#chkMarketing')?.checked;
@@ -63,7 +62,6 @@ async function saveHandleAndConsent() {
     };
 
     await claimHandle({ userId, handle, marketingOptIn, defaults });
-
     try { await setEmailMarketingOptIn(marketingOptIn); } catch (e) { console.warn('CRM opt-in failed', e); }
 
     wixWindow.lightbox.close({ ok: true, handle });

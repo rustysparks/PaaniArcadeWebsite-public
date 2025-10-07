@@ -5,6 +5,18 @@ import { authentication, currentMember } from 'wix-members-frontend';
 
 const COLLECTION = 'RacerProfiles';
 
+// …
+
+$w.onReady(async () => {
+  try {
+    const member = await currentMember.getMember();  // FIXED
+    // …whatever you were doing next
+  } catch (e) {
+    console.error(e);
+  }
+});
+
+
 // TODO: replace these with your real media URLs (copy from Media Manager)
 // You can use wix:image://… or https://static.wixstatic.com/...
 const DEFAULT_AVATAR = 'wix:image://default-avatar.png';
