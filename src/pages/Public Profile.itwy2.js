@@ -1,5 +1,4 @@
-// Public Profile (dynamic)
-
+// ---------- IMPORTS ----------
 import wixData from 'wix-data';
 import wixLocation from 'wix-location';
 import wixWindow from 'wix-window';
@@ -7,179 +6,102 @@ import { currentMember } from 'wix-members-frontend';
 
 import { listVideosForProfile, isLiked, toggleLike } from 'backend/video.jsw';
 
-// ===== tweak this if your edit page lives elsewhere
-const EDIT_PROFILE_PATH = '/members-area/edit-profile';
+// ---------- PAGE STATE ----------
+const PAGE_SIZE = 5;
+let ownerId = null;
+let profileRow = null;
+let nextCursor = null;
+let loaded = [];
 
-// ===== collections / paging
-const PROFILES          = 'RacerProfiles';
-const FOLLOW_COLLECTION = 'Follows';
-const PAGE_SIZE         = 6;
-
-// ===== element ids expected on this page =====
-// Dataset:  #dynamicDataset  (or #publicProfileDataset; both are supported)
-// Buttons:  #btnEditMine, #btnFollow, #btnLoadMore
-// Repeater: #repPublicVideos with children:
-//   #txtVidTitle #txtVidDesc #vpVideo #lblLikes #lblComments
-//   #icoHeartOff #icoHeartOn #btnComments
-
-const el = (id) => { try { return $w(id); } catch { return null; } };
-
-function getDynDataset() {
-  const ids = ['#dynamicDataset', '#publicProfileDataset', '#dataset1'];
-  for (const id of ids) {
-    try {
-      const ds = $w(id);
-      if (ds && typeof ds.onReady === 'function') return ds;
-    } catch (_) {}
-  }
-  return null;
-}
-
-// ---------- state ----------
-let ownerUserId  = null;   // member _id of the profile owner (from dataset.userId)
-let viewerUserId = null;   // logged-in viewer (if any)
-let profileRowId = null;   // RacerProfiles row _id bound to this page
-let nextCursor   = null;
-let loaded       = [];
-
-// ---------- page ----------
+// ---------- PAGE READY ----------
 $w.onReady(async () => {
-  const ds = getDynDataset();
-  if (!ds) {
-    console.warn('Dynamic dataset not found. Ensure your page has #dynamicDataset.');
-    return;
-  }
-
-  el('#btnEditMine')?.hide?.();
-  el('#btnFollow')?.hide?.();
-  el('#btnLoadMore')?.hide?.();
+  const ds = $w('#dynamicDataset');       // your dynamic dataset on the public profile page
+  const editBtn = $w('#btnEditMine');     // add a regular Button with this id
+  if (editBtn && editBtn.hide) editBtn.hide();
 
   await ds.onReady(async () => {
-    const item = ds.getCurrentItem();
-    profileRowId = item?._id || null;
-    ownerUserId  = item?.userId || null; // make sure your collection has a userId field
+    profileRow = ds.getCurrentItem();
+    ownerId = profileRow?.userId || null;
 
-    // who is viewing?
-    const me = await currentMember.getMember().catch(() => null);
-    viewerUserId = me?._id || null;
+    // Owner-only "Edit Profile" button
+    try {
+      const me = await currentMember.getMember();
+      if (me && profileRow && profileRow.userId === me._id && editBtn) {
+        editBtn.show && editBtn.show();
+        editBtn.onClick && editBtn.onClick(() => {
+          // ⬇️ change to your actual edit page path if different
+          wixLocation.to('/members-area/edit-profile');
+        });
+      }
+    } catch (_) {}
 
-    // Edit vs Follow
-    if (viewerUserId && ownerUserId && viewerUserId === ownerUserId) {
-      const b = el('#btnEditMine');
-      b?.show?.();
-      b?.onClick?.(() => wixLocation.to(EDIT_PROFILE_PATH));
-      el('#btnFollow')?.hide?.();
-    } else {
-      await setupFollowButton();
+    // Videos (if you placed a repeater)
+    const rep = $w('#repPublicVideos');
+    if (rep && rep.onItemReady) {
+      rep.onItemReady(bindVideoItem);
+      await loadMoreVideos();
+      const more = $w('#btnLoadMore');
+      if (more && more.onClick) more.onClick(loadMoreVideos);
     }
-
-    // videos
-    wireVideoRepeater();
-    await loadMoreVideos();
-    el('#btnLoadMore')?.onClick?.(loadMoreVideos);
   });
 });
 
-// ---------- follow / unfollow ----------
-async function setupFollowButton() {
-  const btn = el('#btnFollow');
-  if (!btn || !ownerUserId) return;
-
-  // not logged in → route to login (or hide if you prefer)
-  if (!viewerUserId) {
-    btn.show?.();
-    btn.label = 'Follow';
-    btn.onClick(() => wixLocation.to('/signup-login'));
-    return;
-  }
-
-  // check existing follow
-  const r = await wixData.query(FOLLOW_COLLECTION)
-    .eq('followerId', viewerUserId)
-    .eq('followeeId', ownerUserId)
-    .limit(1).find();
-
-  let isFollowing = r.items.length > 0;
-  btn.show?.();
-  btn.label = isFollowing ? 'Unfollow' : 'Follow';
-
-  btn.onClick(async () => {
-    btn.disable?.();
-    try {
-      if (isFollowing) {
-        await wixData.remove(FOLLOW_COLLECTION, r.items[0]._id).catch(() => {});
-        isFollowing = false;
-        btn.label = 'Follow';
-      } else {
-        const inserted = await wixData.insert(FOLLOW_COLLECTION, {
-          followerId: viewerUserId,
-          followeeId: ownerUserId,
-          createdAt: new Date()
-        });
-        r.items = [inserted];
-        isFollowing = true;
-        btn.label = 'Unfollow';
-      }
-    } finally {
-      btn.enable?.();
-    }
-  });
-}
-
-// ---------- videos ----------
-function wireVideoRepeater() {
-  const rep = el('#repPublicVideos');
-  if (!rep) return;
-
-  rep.onItemReady(($item, item) => {
-    $item('#txtVidTitle')?.text = item.title || '';
-    $item('#txtVidDesc')?.text  = item.description || '';
-
-    const player = $item('#vpVideo');
-    if (player) {
-      if (player.videoUrl !== undefined) player.videoUrl = item.youtubeUrl || '';
-      else if (player.src !== undefined) player.src = item.youtubeUrl || '';
-      if (player.autoPlay !== undefined) player.autoPlay = false;
-      if (player.controls  !== undefined) player.controls  = true;
-    }
-
-    $item('#lblLikes')?.text     = String(item.likesCount ?? 0);
-    $item('#lblComments')?.text  = String(item.commentsCount ?? 0);
-
-    initLikeUI($item, item);
-
-    $item('#btnComments')?.onClick(async () => {
-      const res = await wixWindow.openLightbox('CommentsLB', { videoId: item._id, ownerUserId });
-      if (res && typeof res.commentsCount === 'number') {
-        item.commentsCount = res.commentsCount;
-        $item('#lblComments').text = String(item.commentsCount);
-      }
-    });
-  });
-}
-
+// ---------- VIDEO PAGING ----------
 async function loadMoreVideos() {
-  if (!profileRowId) return;
-  const r = await listVideosForProfile(profileRowId, PAGE_SIZE, nextCursor)
-              .catch(() => ({ items: [], nextCursor: null }));
+  if (!profileRow?._id) return;
+  const rep = $w('#repPublicVideos');
+  const more = $w('#btnLoadMore');
 
-  loaded     = loaded.concat(r.items || []);
+  const r = await listVideosForProfile(profileRow._id, PAGE_SIZE, nextCursor)
+    .catch(() => ({ items: [], nextCursor: null }));
+
+  loaded = loaded.concat(r.items || []);
   nextCursor = r.nextCursor || null;
 
-  const rep = el('#repPublicVideos');
-  if (rep) rep.data = loaded;
+  if (rep && typeof rep.data !== 'undefined') rep.data = loaded;
 
-  const lm = el('#btnLoadMore');
-  if (!nextCursor || (r.items || []).length === 0) lm?.collapse?.(); else lm?.expand?.();
+  if (more && more.expand && more.collapse) {
+    (!nextCursor || (r.items || []).length === 0) ? more.collapse() : more.expand();
+  }
 }
 
-// ---------- likes ----------
+// ---------- REPEATER BINDER ----------
+function bindVideoItem($item, item) {
+  const t = $item('#txtVidTitle'); if (t) t.text = item.title || '';
+  const d = $item('#txtVidDesc');  if (d) d.text = item.description || '';
+
+  const vp = $item('#vpVideo');
+  if (vp && typeof vp.videoUrl !== 'undefined') vp.videoUrl = item.youtubeUrl || '';
+  else if (vp && typeof vp.src !== 'undefined')  vp.src = item.youtubeUrl || '';
+
+  const likes = $item('#lblLikes');     if (likes) likes.text = String(item.likesCount || 0);
+  const comm  = $item('#lblComments');  if (comm)  comm.text  = String(item.commentsCount || 0);
+
+  initLikeUI($item, item);
+
+  const btnC = $item('#btnComments');
+  if (btnC && btnC.onClick) {
+    btnC.onClick(async () => {
+      const res = await wixWindow.openLightbox('CommentsLB', {
+        videoId: item._id,
+        ownerUserId: ownerId
+      }).catch(() => null);
+
+      if (res && typeof res.commentsCount === 'number' && comm) {
+        comm.text = String(res.commentsCount);
+      }
+    });
+  }
+}
+
+// ---------- LIKE HELPERS ----------
 async function initLikeUI($item, item) {
   setLikeUI($item, false, item.likesCount || 0);
 
-  let liked = false;
-  try { liked = await isLiked(item._id); } catch (_) {}
-  setLikeUI($item, liked, item.likesCount || 0);
+  try {
+    const liked = await isLiked(item._id);
+    setLikeUI($item, liked, item.likesCount || 0);
+  } catch (_) {}
 
   const toggle = async () => {
     disableLikeIcons($item, true);
@@ -192,27 +114,27 @@ async function initLikeUI($item, item) {
     }
   };
 
-  $item('#icoHeartOff')?.onClick(toggle);
-  $item('#icoHeartOn')?.onClick(toggle);
+  const off = $item('#icoHeartOff'); if (off && off.onClick) off.onClick(toggle);
+  const on  = $item('#icoHeartOn');  if (on  && on.onClick)  on.onClick(toggle);
 }
 
 function setLikeUI($item, liked, count) {
-  if (liked) {
-    $item('#icoHeartOn')?.expand?.();
-    $item('#icoHeartOff')?.collapse?.();
-  } else {
-    $item('#icoHeartOff')?.expand?.();
-    $item('#icoHeartOn')?.collapse?.();
+  const off = $item('#icoHeartOff');
+  const on  = $item('#icoHeartOn');
+
+  if (off && on && off.collapse && on.collapse) {
+    if (liked) { on.expand && on.expand(); off.collapse && off.collapse(); }
+    else       { off.expand && off.expand(); on.collapse && on.collapse(); }
   }
-  $item('#lblLikes')?.text = String(count ?? 0);
+
+  const lbl = $item('#lblLikes'); if (lbl) lbl.text = String(count ?? 0);
 }
 
 function disableLikeIcons($item, disabled) {
-  if (disabled) {
-    $item('#icoHeartOff')?.disable?.();
-    $item('#icoHeartOn')?.disable?.();
-  } else {
-    $item('#icoHeartOff')?.enable?.();
-    $item('#icoHeartOn')?.enable?.();
+  const off = $item('#icoHeartOff');
+  const on  = $item('#icoHeartOn');
+  if (off && on) {
+    if (disabled) { off.disable && off.disable(); on.disable && on.disable(); }
+    else          { off.enable  && off.enable();  on.enable  && on.enable();  }
   }
 }
