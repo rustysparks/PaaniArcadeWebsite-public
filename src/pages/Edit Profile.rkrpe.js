@@ -5,38 +5,45 @@ import wixWindow from 'wix-window';
 import { currentMember } from 'wix-members-frontend';
 
 import { createVideo, getMyVideos, deleteVideo } from 'backend/video.jsw';
-import { getProfile } from 'backend/members.jsw';
 
 // ---------- CONSTANTS ----------
 const PROFILES = 'RacerProfiles';
-const EDIT_DATASET_ID     = '#profileDataset';  // main dataset bound to your inputs
-const OPTIONAL_DATASET_ID = '#dataset1';        // if you have a second one
 
-// your default images
+// IDs in your editor (rename here if yours differ)
+const EDIT_DATASET_ID     = '#profileDataset';  // dataset bound to inputs (Set to Read & Write in Editor)
+const OPTIONAL_DATASET_ID = '#dataset1';        // remove if you don't have this
+
+const INP_DISPLAY = '#inpDisplayName'; // bound to your Display Name field (we also set displayName_lc)
+const INP_REAL    = '#inpRealName';    // bound to realName
+
+// Your default images
 const DEFAULT_AVATAR = 'https://static.wixstatic.com/media/144d60_f764ac01681447b5b2962b4b787d1d00~mv2.jpg';
 const DEFAULT_COVER  = 'https://static.wixstatic.com/media/144d60_d8bb3358581e47ceb61df2085f888225~mv2.jpg';
-
-// If you renamed inputs, update these ids:
-const INP_DISPLAY = '#inpDisplayName'; // connected to field displayName (and we also write displayName_lc)
-const INP_REAL    = '#inpRealName';    // connected to field realName
 
 // ---------- STATE ----------
 let gUserId = null;
 let gProfileId = null;
 let uploads = 0;
 
+// Helper: await a dataset’s onReady (Velo’s onReady takes a callback, not a Promise)
+function ready(ds) {
+  return new Promise((resolve) => ds.onReady(() => resolve()));
+}
+
 // ---------- PAGE READY ----------
 $w.onReady(async () => {
-  const ds = $w(EDIT_DATASET_ID);
+  const ds  = $w(EDIT_DATASET_ID);
   const opt = $w(OPTIONAL_DATASET_ID);
-  if (ds && ds.onReady)  await ds.onReady();
-  if (opt && opt.onReady) await opt.onReady();
+
+  // Wait for datasets safely (no bare ds.onReady())
+  if (ds && ds.onReady)  await ready(ds);
+  if (opt && opt.onReady) await ready(opt);
 
   const me = await currentMember.getMember().catch(() => null);
   if (!me) return;
   gUserId = me._id;
 
-  // Ensure a row exists for this member (and seed defaults once)
+  // Ensure a profile row exists (seed defaults once)
   let r = await wixData.query(PROFILES).eq('userId', gUserId).limit(1).find();
   let row = r.items[0];
   if (!row) {
@@ -48,37 +55,37 @@ $w.onReady(async () => {
   }
   gProfileId = row._id;
 
-  // Bind dataset to THIS member (requires Read & Write mode)
+  // Scope dataset to this member (Editor: set dataset to **Read & Write**, not Write-only)
   try {
     if (ds && ds.setFilter) {
       await ds.setFilter(wixData.filter().eq('userId', gUserId));
     }
   } catch (e) {
-    console.warn('Dataset is Write-Only. In the Editor set the dataset to "Read & Write" to edit existing rows.');
+    console.warn('Dataset is Write-Only. In the Editor, set the dataset mode to "Read & Write".');
   }
 
-  // Buttons
+  // Save button
   const saveBtn = $w('#btnSaveProfile');
   if (saveBtn && saveBtn.onClick) {
     saveBtn.onClick(async () => {
-      if (uploads > 0) return;                 // prevent save while uploading
+      if (uploads > 0) return;                 // don’t save while uploads running
       const ok = await validateDisplayNameUnique(ds);
       if (!ok) return;
       await ds?.save?.().catch((e) => console.error('save failed', e));
     });
   }
 
+  // View public profile (works even unsaved)
   const viewBtn = $w('#btnViewPublicProfile');
   if (viewBtn && viewBtn.onClick) {
     viewBtn.onClick(() => {
-      // Navigate even if not saved yet
       const cur = ds?.getCurrentItem ? ds.getCurrentItem() : row;
       const slug = cur?.slug || cur?.handle || cur?.displayName_lc;
       if (slug) wixLocation.to(`/profile/${slug}`);
     });
   }
 
-  // Uploads (instant preview + persist)
+  // Instant uploads (preview + persist)
   wireUploads();
 
   // Videos
@@ -101,9 +108,9 @@ function wireUploads() {
       try {
         const file = await upA.startUpload();
         if (file?.fileUrl) {
-          const img = $w('#imgAvatar'); if (img) img.src = file.fileUrl;          // instant preview
+          const img = $w('#imgAvatar'); if (img) img.src = file.fileUrl; // instant preview
           const ds = $w(EDIT_DATASET_ID); ds?.setFieldValue?.('avatarImage', file.fileUrl);
-          await ds?.save?.().catch(() => {});                                     // persist immediately
+          await ds?.save?.().catch(() => {});                             // persist immediately
         }
       } finally { endUploadUI(); }
     });
@@ -117,9 +124,9 @@ function wireUploads() {
       try {
         const file = await upC.startUpload();
         if (file?.fileUrl) {
-          const img = $w('#imgCover'); if (img) img.src = file.fileUrl;           // instant preview
+          const img = $w('#imgCover'); if (img) img.src = file.fileUrl;  // instant preview
           const ds = $w(EDIT_DATASET_ID); ds?.setFieldValue?.('coverImage', file.fileUrl);
-          await ds?.save?.().catch(() => {});                                     // persist immediately
+          await ds?.save?.().catch(() => {});                             // persist immediately
         }
       } finally { endUploadUI(); }
     });
@@ -134,7 +141,7 @@ async function validateDisplayNameUnique(ds) {
 
   const lc = raw.toLowerCase();
 
-  // If a hidden lc field exists, keep it synced
+  // Keep the lc field synced for uniqueness queries
   ds?.setFieldValue?.('displayName_lc', lc);
 
   const taken = await wixData.query(PROFILES)
