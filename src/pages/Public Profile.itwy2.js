@@ -1,232 +1,218 @@
-// ---------- IMPORTS (must be at top) ----------
+// Public Profile (dynamic)
+
 import wixData from 'wix-data';
 import wixLocation from 'wix-location';
 import wixWindow from 'wix-window';
 import { currentMember } from 'wix-members-frontend';
 
-// backend helpers you created in backend/videos.jsw
+import { listVideosForProfile, isLiked, toggleLike } from 'backend/video.jsw';
 
+// ===== tweak this if your edit page lives elsewhere
+const EDIT_PROFILE_PATH = '/members-area/edit-profile';
 
-import {
-  listVideosForProfile,
-  isLiked,
-  toggleLike
-} from 'backend/video.jsw';
-
-
-// ---------- CONSTANTS ----------
+// ===== collections / paging
+const PROFILES          = 'RacerProfiles';
 const FOLLOW_COLLECTION = 'Follows';
-const PAGE_SIZE = 5;
+const PAGE_SIZE         = 6;
 
-// ---------- STATE ----------
-let ownerId = null;        // member _id of the profile owner
-let profileRow = null;     // RacerProfiles row bound to this page
-let nextCursor = null;     // paging cursor for videos
-let loaded = [];           // accumulated loaded videos
+// ===== element ids expected on this page =====
+// Dataset:  #dynamicDataset  (or #publicProfileDataset; both are supported)
+// Buttons:  #btnEditMine, #btnFollow, #btnLoadMore
+// Repeater: #repPublicVideos with children:
+//   #txtVidTitle #txtVidDesc #vpVideo #lblLikes #lblComments
+//   #icoHeartOff #icoHeartOn #btnComments
 
-// ---------- PAGE READY ----------
+const el = (id) => { try { return $w(id); } catch { return null; } };
+
+function getDynDataset() {
+  const ids = ['#dynamicDataset', '#publicProfileDataset', '#dataset1'];
+  for (const id of ids) {
+    try {
+      const ds = $w(id);
+      if (ds && typeof ds.onReady === 'function') return ds;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// ---------- state ----------
+let ownerUserId  = null;   // member _id of the profile owner (from dataset.userId)
+let viewerUserId = null;   // logged-in viewer (if any)
+let profileRowId = null;   // RacerProfiles row _id bound to this page
+let nextCursor   = null;
+let loaded       = [];
+
+// ---------- page ----------
 $w.onReady(async () => {
-  // Wait for owner dataset (RacerProfiles) to be ready
-  await $w('#publicProfileDataset').onReady();
-  profileRow = $w('#publicProfileDataset').getCurrentItem();
-  if (!profileRow || !profileRow.userId) {
-    // No owner data — hide action buttons just in case
-    if ($w('#btnFollow').hide) $w('#btnFollow').hide();
-    if ($w('#btnEditProfile').hide) $w('#btnEditProfile').hide();
+  const ds = getDynDataset();
+  if (!ds) {
+    console.warn('Dynamic dataset not found. Ensure your page has #dynamicDataset.');
     return;
   }
-  ownerId = profileRow.userId;
 
-  // Set up Edit vs Follow buttons
-  await setupOwnerAndFollowButtons(ownerId);
+  el('#btnEditMine')?.hide?.();
+  el('#btnFollow')?.hide?.();
+  el('#btnLoadMore')?.hide?.();
 
-  // Wire repeater binder
-  $w('#repPublicVideos').onItemReady(bindVideoItem);
+  await ds.onReady(async () => {
+    const item = ds.getCurrentItem();
+    profileRowId = item?._id || null;
+    ownerUserId  = item?.userId || null; // make sure your collection has a userId field
 
-  // First page
-  await loadMoreVideos();
+    // who is viewing?
+    const me = await currentMember.getMember().catch(() => null);
+    viewerUserId = me?._id || null;
 
-  // Load more
-  $w('#btnLoadMore').onClick(loadMoreVideos);
+    // Edit vs Follow
+    if (viewerUserId && ownerUserId && viewerUserId === ownerUserId) {
+      const b = el('#btnEditMine');
+      b?.show?.();
+      b?.onClick?.(() => wixLocation.to(EDIT_PROFILE_PATH));
+      el('#btnFollow')?.hide?.();
+    } else {
+      await setupFollowButton();
+    }
+
+    // videos
+    wireVideoRepeater();
+    await loadMoreVideos();
+    el('#btnLoadMore')?.onClick?.(loadMoreVideos);
+  });
 });
 
-// ---------- OWNER / FOLLOW UI ----------
-async function setupOwnerAndFollowButtons(ownerUserId) {
-  const { member } = await currentMember.getMember();
+// ---------- follow / unfollow ----------
+async function setupFollowButton() {
+  const btn = el('#btnFollow');
+  if (!btn || !ownerUserId) return;
 
-  if (!member) {
-    // Not logged in: hide Edit, show Follow (you can disable or route to login on click)
-    showFollow('Follow');
-    hideEdit();
-    // Optional: require login on click
-    // $w('#btnFollow').onClick(() => wixLocation.to('/signup-login'));
+  // not logged in → route to login (or hide if you prefer)
+  if (!viewerUserId) {
+    btn.show?.();
+    btn.label = 'Follow';
+    btn.onClick(() => wixLocation.to('/signup-login'));
     return;
   }
 
-  const viewerId = member._id;
-
-  if (viewerId === ownerUserId) {
-    // This is the owner’s own page: show Edit Profile, hide Follow
-    hideFollow();
-    showEdit(() => wixLocation.to('/my-profile')); // change to your edit page path if different
-    return;
-  }
-
-  // Not owner: show Follow/Unfollow
-  hideEdit();
-  showFollow('Follow');
-
-  // Check if already following
+  // check existing follow
   const r = await wixData.query(FOLLOW_COLLECTION)
-    .eq('followerId', viewerId)
+    .eq('followerId', viewerUserId)
     .eq('followeeId', ownerUserId)
-    .limit(1)
-    .find();
+    .limit(1).find();
 
   let isFollowing = r.items.length > 0;
-  $w('#btnFollow').label = isFollowing ? 'Unfollow' : 'Follow';
+  btn.show?.();
+  btn.label = isFollowing ? 'Unfollow' : 'Follow';
 
-  $w('#btnFollow').onClick(async () => {
-    $w('#btnFollow').disable();
+  btn.onClick(async () => {
+    btn.disable?.();
     try {
       if (isFollowing) {
-        await wixData.remove(FOLLOW_COLLECTION, r.items[0]._id);
+        await wixData.remove(FOLLOW_COLLECTION, r.items[0]._id).catch(() => {});
         isFollowing = false;
-        $w('#btnFollow').label = 'Follow';
+        btn.label = 'Follow';
       } else {
         const inserted = await wixData.insert(FOLLOW_COLLECTION, {
-          followerId: viewerId,
+          followerId: viewerUserId,
           followeeId: ownerUserId,
           createdAt: new Date()
         });
-        r.items = [inserted]; // keep handle so next click can remove
+        r.items = [inserted];
         isFollowing = true;
-        $w('#btnFollow').label = 'Unfollow';
+        btn.label = 'Unfollow';
       }
     } finally {
-      $w('#btnFollow').enable();
+      btn.enable?.();
     }
   });
 }
 
-function showEdit(onClick) {
-  if ($w('#btnEditProfile').show) $w('#btnEditProfile').show();
-  if (onClick) $w('#btnEditProfile').onClick(onClick);
-}
-function hideEdit() {
-  if ($w('#btnEditProfile').hide) $w('#btnEditProfile').hide();
-}
-function showFollow(label = 'Follow') {
-  if ($w('#btnFollow').show) $w('#btnFollow').show();
-  $w('#btnFollow').label = label;
-}
-function hideFollow() {
-  if ($w('#btnFollow').hide) $w('#btnFollow').hide();
+// ---------- videos ----------
+function wireVideoRepeater() {
+  const rep = el('#repPublicVideos');
+  if (!rep) return;
+
+  rep.onItemReady(($item, item) => {
+    $item('#txtVidTitle')?.text = item.title || '';
+    $item('#txtVidDesc')?.text  = item.description || '';
+
+    const player = $item('#vpVideo');
+    if (player) {
+      if (player.videoUrl !== undefined) player.videoUrl = item.youtubeUrl || '';
+      else if (player.src !== undefined) player.src = item.youtubeUrl || '';
+      if (player.autoPlay !== undefined) player.autoPlay = false;
+      if (player.controls  !== undefined) player.controls  = true;
+    }
+
+    $item('#lblLikes')?.text     = String(item.likesCount ?? 0);
+    $item('#lblComments')?.text  = String(item.commentsCount ?? 0);
+
+    initLikeUI($item, item);
+
+    $item('#btnComments')?.onClick(async () => {
+      const res = await wixWindow.openLightbox('CommentsLB', { videoId: item._id, ownerUserId });
+      if (res && typeof res.commentsCount === 'number') {
+        item.commentsCount = res.commentsCount;
+        $item('#lblComments').text = String(item.commentsCount);
+      }
+    });
+  });
 }
 
-// ---------- VIDEO PAGING ----------
 async function loadMoreVideos() {
-  const r = await listVideosForProfile(profileRow._id, PAGE_SIZE, nextCursor);
-  loaded = loaded.concat(r.items || []);
+  if (!profileRowId) return;
+  const r = await listVideosForProfile(profileRowId, PAGE_SIZE, nextCursor)
+              .catch(() => ({ items: [], nextCursor: null }));
+
+  loaded     = loaded.concat(r.items || []);
   nextCursor = r.nextCursor || null;
 
-  // Bind data into repeater
-  $w('#repPublicVideos').data = loaded;
+  const rep = el('#repPublicVideos');
+  if (rep) rep.data = loaded;
 
-  // Handle Load More visibility
-  if (!nextCursor || (r.items || []).length === 0) {
-    $w('#btnLoadMore').collapse?.();
-  } else {
-    $w('#btnLoadMore').expand?.();
-  }
+  const lm = el('#btnLoadMore');
+  if (!nextCursor || (r.items || []).length === 0) lm?.collapse?.(); else lm?.expand?.();
 }
 
-// ---------- REPEATER ITEM BINDER ----------
-function bindVideoItem($item, item) {
-  // Title/Description
-  $item('#txtVidTitle').text = item.title || '';
-  $item('#txtVidDesc').text = item.description || '';
-
-  // Video player URL (Wix Video Player accepts standard YouTube watch links)
-  if ($item('#vpVideo').videoUrl !== undefined) {
-    $item('#vpVideo').videoUrl = item.youtubeUrl || '';
-  } else if ($item('#vpVideo').src !== undefined) {
-    $item('#vpVideo').src = item.youtubeUrl || '';
-  }
-
-  // Counts
-  $item('#lblLikes').text = String(item.likesCount || 0);
-  $item('#lblComments').text = String(item.commentsCount || 0);
-
-  // Like UI (icons)
-  initLikeUI($item, item);
-
-  // Comments button -> open lightbox, and update count on return
-  $item('#btnComments').onClick(async () => {
-    const res = await wixWindow.openLightbox('CommentsLB', {
-      videoId: item._id,
-      ownerUserId: ownerId
-    });
-    if (res && typeof res.commentsCount === 'number') {
-      item.commentsCount = res.commentsCount;
-      $item('#lblComments').text = String(item.commentsCount);
-    }
-  });
-}
-
-// ---------- LIKE HELPERS ----------
+// ---------- likes ----------
 async function initLikeUI($item, item) {
-  // Default: treat as not-liked until confirmed
   setLikeUI($item, false, item.likesCount || 0);
 
-  try {
-    const liked = await isLiked(item._id);
-    setLikeUI($item, liked, item.likesCount || 0);
-  } catch (_e) {
-    // Not logged in or backend error – leave as unliked
-  }
+  let liked = false;
+  try { liked = await isLiked(item._id); } catch (_) {}
+  setLikeUI($item, liked, item.likesCount || 0);
 
-  const handleToggle = async () => {
+  const toggle = async () => {
     disableLikeIcons($item, true);
     try {
       const res = await toggleLike(item._id);
-      item.likesCount = res.likesCount; // keep in sync
+      item.likesCount = res.likesCount;
       setLikeUI($item, res.liked, res.likesCount);
     } finally {
       disableLikeIcons($item, false);
     }
   };
 
-  $item('#icoHeartOff').onClick(handleToggle);
-  $item('#icoHeartOn').onClick(handleToggle);
+  $item('#icoHeartOff')?.onClick(toggle);
+  $item('#icoHeartOn')?.onClick(toggle);
 }
 
 function setLikeUI($item, liked, count) {
   if (liked) {
-    $item('#icoHeartOn').expand?.();
-    $item('#icoHeartOff').collapse?.();
+    $item('#icoHeartOn')?.expand?.();
+    $item('#icoHeartOff')?.collapse?.();
   } else {
-    $item('#icoHeartOff').expand?.();
-    $item('#icoHeartOn').collapse?.();
+    $item('#icoHeartOff')?.expand?.();
+    $item('#icoHeartOn')?.collapse?.();
   }
-  $item('#lblLikes').text = String(count ?? 0);
-
-  // Accessibility label
-  if ($item('#icoHeartOff').ariaLabel !== undefined) {
-    const label = liked ? 'Unlike (liked)' : 'Like';
-    $item('#icoHeartOff').ariaLabel = label;
-    $item('#icoHeartOn').ariaLabel = label;
-  }
+  $item('#lblLikes')?.text = String(count ?? 0);
 }
 
 function disableLikeIcons($item, disabled) {
-  const off = $item('#icoHeartOff');
-  const on  = $item('#icoHeartOn');
   if (disabled) {
-    off.disable?.();
-    on.disable?.();
+    $item('#icoHeartOff')?.disable?.();
+    $item('#icoHeartOn')?.disable?.();
   } else {
-    off.enable?.();
-    on.enable?.();
+    $item('#icoHeartOff')?.enable?.();
+    $item('#icoHeartOn')?.enable?.();
   }
 }

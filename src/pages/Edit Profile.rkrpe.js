@@ -1,4 +1,4 @@
-// Edit Profile (/blank)
+// Edit Profile
 import wixData from 'wix-data';
 import wixLocation from 'wix-location';
 import { currentMember } from 'wix-members-frontend';
@@ -8,143 +8,21 @@ import { createVideo, getMyVideos, deleteVideo } from 'backend/video.jsw';
 import { getProfile } from 'backend/members.jsw';
 
 const PROFILES = 'RacerProfiles';
-const EDIT_DATASET_ID     = '#profileDataset'; // 12 elements
-const OPTIONAL_DATASET_ID = '#dataset1';       // 3 elements
 
-let gUserId = null;
-let gProfileId = null;
-let uploadsInProgress = 0;
+// datasets on the page
+const EDIT_DATASET_ID     = '#profileDataset';
+const OPTIONAL_DATASET_ID = '#dataset1';
 
-$w.onReady(init);
+// your defaults
+const DEFAULT_AVATAR = 'https://static.wixstatic.com/media/144d60_f764ac01681447b5b2962b4b787d1d00~mv2.jpg';
+const DEFAULT_COVER  = 'https://static.wixstatic.com/media/144d60_d8bb3358581e47ceb61df2085f888225~mv2.jpg';
 
-async function init() {
-  try {
-    // Who's logged in?
-    const m = await currentMember.getMember();
-    if (!m) return;
-    gUserId = m._id;
+// field keys (from Manage Fields)
+const DISPLAY_NAME_FIELD = 'displayName_lc';
+const REAL_NAME_FIELD    = 'realName';
 
-    // Ensure the row exists first
-    let r = await wixData.query(PROFILES).eq('userId', gUserId).limit(1).find();
-    let profile = r.items[0];
-    if (!profile) profile = await wixData.insert(PROFILES, { userId: gUserId });
-    gProfileId = profile._id;
+const el = (id) => { try { return $w(id); } catch { return null; } };
 
-    // Gate: ask for handle if missing
-    const row = await getProfile(gUserId);
-    if (!row?.handle) wixWindow.openLightbox('HandleSetup');
-
-    // Scope datasets to THIS user and switch to write mode
-    await bindDataset(EDIT_DATASET_ID, gUserId);
-    await bindDataset(OPTIONAL_DATASET_ID, gUserId);
-
-    // Optional “View Public Profile” button -> /profile/{slug}
-    if (row?.slug && $w('#btnViewPublicProfile')) {
-      $w('#btnViewPublicProfile').onClick(() => wixLocation.to(`/profile/${row.slug}`));
-    }
-
-    // Uploads
-    wireUploads();
-
-    // Videos
-    wireVideoRepeater();
-    $w('#btnAddVideo')?.onClick(addVideoFromInputs);
-    await loadMyVideos();
-  } catch (e) {
-    console.error('Edit Profile init failed', e);
-  }
-}
-
-async function bindDataset(sel, userId) {
-  try {
-    const ds = $w(sel);
-    if (!ds?.setFilter) return;
-    // write mode (if supported)
-    if (typeof ds.setMode === 'function') ds.setMode('write');
-    await ds.setFilter(wixData.filter().eq('userId', userId));
-    await ds.refresh(); // important if we just created the row
-  } catch (e) {
-    console.warn('bindDataset failed for', sel, e);
-  }
-}
-
-/* ===== uploads ===== */
-function wireUploads() {
-  $w('#uplAvatar')?.onChange(async () => {
-    if (!$w('#uplAvatar').value?.length) return;
-    beginUpload();
-    try {
-      const f = await $w('#uplAvatar').startUpload();
-      if (f?.fileUrl && $w('#imgAvatar')) $w('#imgAvatar').src = f.fileUrl;
-    } catch (e) { console.error('Avatar upload failed', e); }
-    finally { endUpload(); }
-  });
-
-  $w('#uplCover')?.onChange(async () => {
-    if (!$w('#uplCover').value?.length) return;
-    beginUpload();
-    try {
-      const f = await $w('#uplCover').startUpload();
-      if (f?.fileUrl && $w('#imgCover')) $w('#imgCover').src = f.fileUrl;
-    } catch (e) { console.error('Cover upload failed', e); }
-    finally { endUpload(); }
-  });
-
-  $w('#btnSaveProfile')?.onClick(async () => {
-    if (uploadsInProgress > 0) return;
-    try {
-      const ds = $w(EDIT_DATASET_ID);
-      if (ds?.save) await ds.save();
-    } catch (e) {
-      console.error('Save failed', e);
-    }
-  });
-}
-
-/* ===== videos ===== */
-function wireVideoRepeater() {
-  if (!$w('#repMyVideos')) return;
-  $w('#repMyVideos').onItemReady(($item, item) => {
-    $item('#txtMyVidTitle').text = item.title || '';
-    $item('#txtMyVidDesc').text  = item.description || '';
-
-    const url = toYouTubeWatchUrl(item.youtubeUrl || '');
-    if (url) {
-      if ($item('#vpVideo')?.videoUrl !== undefined) $item('#vpVideo').videoUrl = url;
-      else if ($item('#vpVideo')?.src !== undefined) $item('#vpVideo').src = url;
-      if ($item('#vpVideo')?.autoPlay !== undefined) $item('#vpVideo').autoPlay = false;
-      if ($item('#vpVideo')?.controls  !== undefined) $item('#vpVideo').controls  = true;
-    }
-
-    $item('#btnDeleteVideo')?.onClick(async () => {
-      try { await deleteVideo(item._id); await loadMyVideos(); }
-      catch (e) { console.error('Delete failed', e); }
-    });
-  });
-}
-
-async function loadMyVideos() {
-  if (!gUserId || !gProfileId || !$w('#repMyVideos')) return;
-  const videos = await getMyVideos({ userId: gUserId, profileId: gProfileId });
-  $w('#repMyVideos').data = videos || [];
-}
-
-async function addVideoFromInputs() {
-  const youtubeUrl  = ($w('#inpYoutubeUrl')?.value || '').trim();
-  const title       = ($w('#inpVidTitle')?.value   || '').trim();
-  const description = ($w('#inpVidDesc')?.value    || '').trim();
-  if (!youtubeUrl) return;
-
-  await createVideo({ profileId: gProfileId, userId: gUserId, youtubeUrl, title, description, isPublic: true });
-
-  if ($w('#inpYoutubeUrl')) $w('#inpYoutubeUrl').value = '';
-  if ($w('#inpVidTitle'))   $w('#inpVidTitle').value   = '';
-  if ($w('#inpVidDesc'))    $w('#inpVidDesc').value    = '';
-
-  await loadMyVideos();
-}
-
-/* ===== misc helpers ===== */
 function toYouTubeWatchUrl(url) {
   if (!url) return '';
   try {
@@ -153,5 +31,135 @@ function toYouTubeWatchUrl(url) {
     return url;
   } catch { return url; }
 }
-function beginUpload() { uploadsInProgress += 1; $w('#btnSaveProfile')?.disable?.(); $w('#saveHint')?.show?.(); }
-function endUpload()   { uploadsInProgress = Math.max(0, uploadsInProgress - 1); if (!uploadsInProgress) { $w('#btnSaveProfile')?.enable?.(); $w('#saveHint')?.hide?.(); } }
+
+function lockSave(lock) { const b = el('#btnSaveProfile'); lock ? b?.disable?.() : b?.enable?.(); }
+
+let gUserId = null;
+let gProfileId = null;
+let gSlug = null;
+let uploads = 0;
+const beginUpload = () => { uploads++; lockSave(true); };
+const endUpload   = () => { uploads = Math.max(0, uploads - 1); if (!uploads) lockSave(false); };
+
+function wireVideoRepeater() {
+  const rep = el('#repMyVideos');
+  if (!rep) return;
+  rep.onItemReady(($item, item) => {
+    $item('#txtMyVidTitle').text = item.title || '';
+    $item('#txtMyVidDesc').text  = item.description || '';
+    const url = toYouTubeWatchUrl(item.youtubeUrl || '');
+    if (url) {
+      if ($item('#vpVideo')?.videoUrl !== undefined) $item('#vpVideo').videoUrl = url;
+      else if ($item('#vpVideo')?.src !== undefined) $item('#vpVideo').src = url;
+      if ($item('#vpVideo')?.autoPlay !== undefined) $item('#vpVideo').autoPlay = false;
+      if ($item('#vpVideo')?.controls  !== undefined) $item('#vpVideo').controls  = true;
+    }
+    $item('#btnDeleteVideo')?.onClick(async () => {
+      await deleteVideo(item._id).catch(console.error);
+      await loadMyVideos();
+    });
+  });
+}
+
+async function loadMyVideos() {
+  if (!gUserId || !gProfileId || !el('#repMyVideos')) return;
+  const videos = await getMyVideos({ userId: gUserId, profileId: gProfileId }).catch(() => []);
+  $w('#repMyVideos').data = videos || [];
+}
+
+async function ensureProfileFor(userId) {
+  const q = await wixData.query(PROFILES).eq('userId', userId).limit(1).find();
+  let row = q.items[0];
+  if (!row) {
+    row = await wixData.insert(PROFILES, {
+      userId,
+      avatarImage: DEFAULT_AVATAR,
+      coverImage : DEFAULT_COVER
+    });
+  } else {
+    const patch = {};
+    if (!row.avatarImage && DEFAULT_AVATAR) patch.avatarImage = DEFAULT_AVATAR;
+    if (!row.coverImage  && DEFAULT_COVER)  patch.coverImage  = DEFAULT_COVER;
+    if (Object.keys(patch).length) row = await wixData.update(PROFILES, { _id: row._id, ...patch });
+  }
+  return row;
+}
+
+// uniqueness check against displayName_lc (lower-cased)
+async function displayNameTaken(nameLc, myRowId) {
+  if (!nameLc) return false;
+  const r = await wixData.query(PROFILES)
+    .eq(DISPLAY_NAME_FIELD, nameLc)
+    .ne('_id', myRowId)
+    .limit(1)
+    .find();
+  return r.items.length > 0;
+}
+
+$w.onReady(async () => {
+  const me = await currentMember.getMember().catch(() => null);
+  if (!me) return;
+  gUserId = me._id;
+
+  // IMPORTANT in Editor: set both datasets to **Read & Write** (not write-only)
+  const mainDs = el(EDIT_DATASET_ID);
+  const optDs  = el(OPTIONAL_DATASET_ID);
+  try { await mainDs?.setFilter?.(wixData.filter().eq('userId', gUserId)); } catch(e){}
+  try { await optDs?.setFilter?.(wixData.filter().eq('userId', gUserId)); } catch(e){}
+
+  // ensure row + defaults
+  const row = await ensureProfileFor(gUserId);
+  gProfileId = row._id;
+  gSlug = row.slug || null;
+
+  // if no handle yet, open setup
+  const p = await getProfile(gUserId).catch(() => null);
+  if (!p?.handle) wixWindow.openLightbox('HandleSetup');
+  if (p?.slug) gSlug = p.slug;
+
+  // avatar upload (instant preview + save)
+  if (el('#uplAvatar')) {
+    $w('#uplAvatar').onChange(async () => {
+      if (!$w('#uplAvatar').value?.length) return;
+      beginUpload();
+      try {
+        const f = await $w('#uplAvatar').startUpload();
+        if (f?.fileUrl && el('#imgAvatar')) $w('#imgAvatar').src = f.fileUrl;
+        await wixData.update(PROFILES, { _id: gProfileId, avatarImage: f.fileUrl });
+      } catch (e) { console.error('avatar upload', e); } finally { endUpload(); }
+    });
+  }
+
+  // cover upload (instant preview + save)
+  if (el('#uplCover')) {
+    $w('#uplCover').onChange(async () => {
+      if (!$w('#uplCover').value?.length) return;
+      beginUpload();
+      try {
+        const f = await $w('#uplCover').startUpload();
+        if (f?.fileUrl && el('#imgCover')) $w('#imgCover').src = f.fileUrl;
+        await wixData.update(PROFILES, { _id: gProfileId, coverImage: f.fileUrl });
+      } catch (e) { console.error('cover upload', e); } finally { endUpload(); }
+    });
+  }
+
+  // Save: enforce display name uniqueness (lower-cased) and also normalize before saving
+  el('#btnSaveProfile')?.onClick(async () => {
+    if (uploads > 0) return;
+
+    const rawDisplay = ($w('#inpDisplayName')?.value || '').trim();
+    const nameLc = rawDisplay.toLowerCase();
+
+    // normalize the field value in the dataset before save (so the CMS stores lowercase)
+    try { mainDs?.setFieldValue?.(DISPLAY_NAME_FIELD, nameLc); } catch {}
+
+    if (await displayNameTaken(nameLc, gProfileId)) {
+      wixWindow.openLightbox('Message', {
+        title: 'Name in use',
+        text: 'That display name is already taken. Please choose another.'
+      }).catch(()=>{});
+      return;
+    }
+
+    await mainDs?.save?.().catch((e) => console.error('save failed', e));
+    const p2 = await getProfile
